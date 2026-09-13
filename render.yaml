@@ -20,5 +20,7 @@ services:
           property: connectionString
       - key: OPENAI_API_KEY
         sync: false
+      - key: ADMIN_UPLOAD_TOKEN
+        sync: false
       - key: MBA_COPILOT_MODEL
         value: gpt-4.1-mini
