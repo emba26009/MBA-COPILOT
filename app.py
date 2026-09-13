@@ -20,8 +20,17 @@ def detect_concept(q):
 def local_score(q,text):
  concept,terms=detect_concept(q);ql=q.lower();tl=text.lower();qt=set(re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]+",ql))-STOP;tt=set(re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]+",tl))-STOP
  v=len(qt&tt)*1.5+sum(3 for x in terms if x in tl)+(8 if concept and concept in tl else 0)
- if any(x in tl for x in ['total assets','total liabilities',"owners' equity",'balance sheet']) and not any(x in ql for x in ['balance sheet','assets','liabilities','equity']):v-=18
- if any(x in tl for x in ['income statement','net income','sales revenue']) and concept in ('fixed cost','variable cost','contribution','break-even'):v-=8
+ # Strongly prefer explanatory/definitional passages over case tables and unrelated figures.
+ definition_markers={
+  'fixed cost':['does not change','remain constant','constant regardless','within the relevant range','fixed costs are','fixed cost is'],
+  'variable cost':['changes with','varies with','variable costs are','variable cost is','proportion to activity'],
+  'contribution':['selling price minus','sales minus','variable cost','contribution margin'],
+  'break-even':['break-even point','break even point','fixed costs','contribution per unit']}
+ if concept in definition_markers:
+  v += sum(18 for m in definition_markers[concept] if m in tl)
+  if any(x in tl for x in ['exhibit','bill of materials','source: casewriters']) and not any(m in tl for m in definition_markers[concept]):v-=16
+ if concept in ('fixed cost','variable cost','contribution','break-even') and any(x in tl for x in ['total assets','total liabilities',"owners' equity",'balance sheet']):v-=22
+ if any(x in tl for x in ['income statement','net income','sales revenue']) and concept in ('fixed cost','variable cost','contribution','break-even'):v-=10
  return v
 def _filter_items(items,subject):
  out=[];wanted=subject_key(subject)
@@ -34,23 +43,23 @@ def _filter_items(items,subject):
 def _rank(q,items,limit):
  rows=[(local_score(q,norm(it.get('text') or it.get('content') or it.get('passage'))),it) for it in items];rows.sort(key=lambda x:x[0],reverse=True);out=[];seen=set()
  for score,it in rows:
-  if score<1:continue
+  if score<2:continue
   key=(it.get('document') or it.get('filename'),it.get('locator'))
   if key in seen:continue
   seen.add(key);out.append(it)
   if len(out)>=limit:break
  return out
-def retrieve(q,subject=None,limit=10):
+def retrieve(q,subject=None,limit=8):
  items=[]
  if db.enabled() and os.getenv('OPENAI_API_KEY'):
   try:
-   from openai import OpenAI;v=OpenAI(api_key=os.environ['OPENAI_API_KEY']).embeddings.create(model='text-embedding-3-small',input=q).data[0].embedding;items=db.search_vector(v,subject,limit*3)
+   from openai import OpenAI;v=OpenAI(api_key=os.environ['OPENAI_API_KEY']).embeddings.create(model='text-embedding-3-small',input=q).data[0].embedding;items=db.search_vector(v,subject,limit*4)
   except Exception:items=[]
  if not items and db.enabled():
-  try:items=db.search_lexical(q,subject,limit*4)
+  try:items=db.search_lexical(q,subject,limit*6)
   except Exception:items=[]
  if not items and is_all_subjects(subject) and db.enabled():
-  try:items=db.search_lexical(q,None,limit*6)
+  try:items=db.search_lexical(q,None,limit*8)
   except Exception:items=[]
  if not items:items=INDEX
  filtered=_filter_items(items,subject)
@@ -77,14 +86,15 @@ def ask_gpt(q,subject=None):
   return None,f'GPT request failed: {msg}'
 def heuristic_answer(q,refs,concept):
  core={'fixed cost':'A fixed cost does not change with activity within the relevant range.','variable cost':'A variable cost changes with the level of activity.','contribution':'Contribution equals selling price minus variable cost per unit.','break-even':'Break-even is the activity level where contribution covers fixed costs and profit is zero.'}.get(concept,f"The supplied material contains evidence related to '{concept}'.")
- return f'''## 📖 Simple Meaning\n{core}\n\n## 📚 Course Evidence\n{refs[0]["text"][:900]}\n\n## 🧠 Memorize on Priority\n**Must Know:** {core}\n**High Priority:** Understand the distinction from related cost/concept terms.\n**Understand:** Be able to apply it to a business case.\n\n## 🎯 Exam Priority\nFocus first on the definition, distinction, formula where applicable, and worked case examples in the cited material.\n\n## ❓ Likely Exam Questions\n1. Define {concept}.\n2. Differentiate {concept} from a related concept.\n3. Apply {concept} to a business case.\n4. Explain or calculate the relevant metric using supplied case data.\n\n## 🏢 Real Business Use\nGeneral business application; this section is not claimed as a direct quote from the course material.\n\n## ⚠️ Common Confusion\nDo not treat every number in a retrieved case as evidence about the concept. Use only the figures and statements directly connected to the question.\n\n## ⚡ 30-Second Revision\n{core}\n\n[[SOURCE 1]]'''
+ evidence=refs[0]["text"][:1200] if refs else 'Not established in the supplied course material.'
+ return f'''## 📖 Simple Meaning\n{core}\n\n## 📚 Course Evidence\n{evidence}\n\n## 🧠 Memorize on Priority\n**Must Know:** {core}\n**High Priority:** Understand the distinction from related cost/concept terms.\n**Understand:** Be able to apply it to a business case.\n\n## 🎯 Exam Priority\nFocus first on the definition, distinction, formula where applicable, and worked case examples in the cited material.\n\n## ❓ Likely Exam Questions\n1. Define {concept}.\n2. Differentiate {concept} from a related concept.\n3. Apply {concept} to a business case.\n4. Explain or calculate the relevant metric using supplied case data.\n\n## 🏢 Real Business Use\nGeneral business application; this section is not claimed as a direct quote from the course material.\n\n## ⚠️ Common Confusion\nDo not treat every number in a retrieved case as evidence about the concept. Use only the figures and statements directly connected to the question.\n\n## ⚡ 30-Second Revision\n{core}\n\n[[SOURCE 1]]'''
 def answer(q,subject=None,mode='Teach Me'):
  concept,_=detect_concept(q);items=retrieve(q,subject);refs=[ref(x,i) for i,x in enumerate(items)]
  if not refs:return {'answer':'I could not find sufficiently relevant evidence in the selected MBA material. No answer was generated from another subject. Try selecting the subject containing the topic or upload/index the relevant class material.','sources':[],'concept':concept,'grounded':False}
  key=os.getenv('OPENAI_API_KEY')
  if key:
   try:
-   from openai import OpenAI;evidence='\n'.join(f"[SOURCE {i+1}] {r['document']} | {r['locator']} | {r['text']}" for i,r in enumerate(refs));prompt=f'''You are MBA Copilot. Answer ONLY from the supplied evidence and clearly distinguish general business application. Question: {q}. Subject: {subject or 'All Subjects'}. Mode: {mode}. Relevance is critical: use only sources that directly support the concept. Ignore unrelated case fragments, financial statements, tables and numbers. If evidence is insufficient say: "Not established in the supplied course material." Never invent course facts. Structure: 📖 Simple Meaning; 📚 Course Material; 💡 Relevant Example; 🧮 How It Works/Formula if relevant; 🧠 Memorize on Priority with Must Know/High Priority/Understand; 🎯 Exam Priority; ❓ 4-6 likely exam questions; 🏢 Real Business Use (label general application if not course-derived); ⚠️ Common Confusion; ⚡ 30-Second Revision. Insert [[SOURCE N]] only when that source directly supports the sentence. Evidence:\n{evidence}''';r=OpenAI(api_key=key).responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-4.1-mini'),input=prompt);return {'answer':r.output_text,'sources':refs,'concept':concept,'grounded':True}
+   from openai import OpenAI;evidence='\n'.join(f"[SOURCE {i+1}] {r['document']} | {r['locator']} | {r['text']}" for i,r in enumerate(refs));prompt=f'''You are MBA Copilot. Answer ONLY from the supplied MBA course evidence. Question: {q}. Subject: {subject or 'All Subjects'}. Mode: {mode}. Relevance is the highest priority. For a definition question such as "what is X", use the clearest definitional/explanatory source first. Do NOT use a case table, financial statement, exhibit, bill of materials, or isolated number merely because it contains the words X. If the supplied passages do not directly establish the answer, say "Not established in the supplied course material." Never invent course facts. Do not combine unrelated passages to manufacture an answer. Structure: 📖 Simple Meaning; 📚 Course Material; 💡 Relevant Example; 🧮 How It Works/Formula if relevant; 🧠 Memorize on Priority with Must Know/High Priority/Understand; 🎯 Exam Priority; ❓ 4-6 likely exam questions; 🏢 Real Business Use (label general application if not course-derived); ⚠️ Common Confusion; ⚡ 30-Second Revision. Insert [[SOURCE N]] only when that source directly supports the sentence. Evidence:\n{evidence}''';r=OpenAI(api_key=key).responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-4.1-mini'),input=prompt);return {'answer':r.output_text,'sources':refs,'concept':concept,'grounded':True}
   except Exception as e:
    if not any(x in str(e) for x in ('insufficient_quota','credit_balance_exhausted','429')):pass
  return {'answer':heuristic_answer(q,refs,concept),'sources':refs,'concept':concept,'grounded':True,'ai_synthesis':False}
@@ -148,10 +158,10 @@ class Handler(BaseHTTPRequestHandler):
    cookie=f'mba_admin_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}'
    self.send_json({'ok':True,'message':'Admin access granted.'},200,[cookie]);return
   if path=='/api/admin/logout':
-   s=admin_session(self.headers);rawcookie=self.headers.get('Cookie','')
+   rawcookie=self.headers.get('Cookie','')
    try:c=http.cookies.SimpleCookie();c.load(rawcookie);token=c.get('mba_admin_session').value if c.get('mba_admin_session') else '';ADMIN_SESSIONS.pop(token,None)
    except Exception:pass
-   self.send_json({'ok':True},200,['mba_admin_session=; Path=/; HttpOnly; Max-Age=0']) ;return
+   self.send_json({'ok':True},200,['mba_admin_session=; Path=/; HttpOnly; Max-Age=0']);return
   if path=='/api/upload':out,status=upload(raw,self.headers.get('Content-Type',''),admin_session(self.headers));self.send_json(out,status);return
   try:body=json.loads(raw or b'{}')
   except Exception:self.send_json({'error':'Invalid JSON.'},400);return
