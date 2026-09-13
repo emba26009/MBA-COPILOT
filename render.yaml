@@ -23,4 +23,4 @@ services:
       - key: ADMIN_USERS
         sync: false
       - key: MBA_COPILOT_MODEL
-        value: gpt-4.1-mini
+        value: gpt-5.6-luna
