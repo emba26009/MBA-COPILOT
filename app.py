@@ -1,4 +1,4 @@
-import os,re,json,tempfile,email,secrets,http.cookies,time
+import os,re,json,tempfile,email,secrets,http.cookies,time,base64
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -20,14 +20,9 @@ def detect_concept(q):
 def local_score(q,text):
  concept,terms=detect_concept(q);ql=q.lower();tl=text.lower();qt=set(re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]+",ql))-STOP;tt=set(re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]+",tl))-STOP
  v=len(qt&tt)*1.5+sum(3 for x in terms if x in tl)+(8 if concept and concept in tl else 0)
- # Strongly prefer explanatory/definitional passages over case tables and unrelated figures.
- definition_markers={
-  'fixed cost':['does not change','remain constant','constant regardless','within the relevant range','fixed costs are','fixed cost is'],
-  'variable cost':['changes with','varies with','variable costs are','variable cost is','proportion to activity'],
-  'contribution':['selling price minus','sales minus','variable cost','contribution margin'],
-  'break-even':['break-even point','break even point','fixed costs','contribution per unit']}
+ definition_markers={'fixed cost':['does not change','remain constant','constant regardless','within the relevant range','fixed costs are','fixed cost is'],'variable cost':['changes with','varies with','variable costs are','variable cost is','proportion to activity'],'contribution':['selling price minus','sales minus','variable cost','contribution margin'],'break-even':['break-even point','break even point','fixed costs','contribution per unit']}
  if concept in definition_markers:
-  v += sum(18 for m in definition_markers[concept] if m in tl)
+  v+=sum(18 for m in definition_markers[concept] if m in tl)
   if any(x in tl for x in ['exhibit','bill of materials','source: casewriters']) and not any(m in tl for m in definition_markers[concept]):v-=16
  if concept in ('fixed cost','variable cost','contribution','break-even') and any(x in tl for x in ['total assets','total liabilities',"owners' equity",'balance sheet']):v-=22
  if any(x in tl for x in ['income statement','net income','sales revenue']) and concept in ('fixed cost','variable cost','contribution','break-even'):v-=10
@@ -62,31 +57,62 @@ def retrieve(q,subject=None,limit=8):
   try:items=db.search_lexical(q,None,limit*8)
   except Exception:items=[]
  if not items:items=INDEX
- filtered=_filter_items(items,subject)
- return _rank(q,filtered,limit)
+ return _rank(q,_filter_items(items,subject),limit)
 def subjects():
  vals=db.subjects() if db.enabled() else []
  if not vals:vals=list(dict.fromkeys((x.get('subject') or x.get('course')) for x in INDEX if x.get('subject') or x.get('course')))
  vals=[x for x in vals if x];bykey={subject_key(x):x for x in vals};ordered=[]
  for p in PREFERRED:
   if subject_key(p) in bykey:ordered.append(bykey[subject_key(p)])
- ordered.extend(x for x in vals if subject_key(x) not in {subject_key(y) for y in ordered})
- return ordered
+ ordered.extend(x for x in vals if subject_key(x) not in {subject_key(y) for y in ordered});return ordered
 def ref(item,n):
  doc=item.get('document') or item.get('source') or item.get('filename') or 'Course material';loc=item.get('locator') or item.get('page') or item.get('slide') or item.get('sheet') or ''
  return {'ref':f'src_{n}','document':doc,'locator':loc,'text':norm(item.get('text') or item.get('content') or item.get('passage')),'type':'spreadsheet' if str(doc).lower().endswith(('.xls','.xlsx')) else 'document'}
-def ask_gpt(q,subject=None):
+def gpt_client():
  key=os.getenv('OPENAI_API_KEY')
- if not key:return None,'OpenAI API key is not configured on this server.'
+ if not key:return None
+ from openai import OpenAI
+ return OpenAI(api_key=key)
+def ask_gpt(q,subject=None):
+ c=gpt_client()
+ if not c:return None,'OpenAI API key is not configured on this server.'
  try:
-  from openai import OpenAI;r=OpenAI(api_key=key).responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-4.1-mini'),input=f'You are a general GPT assistant, not course-grounded. Subject: {subject or "MBA"}. Answer clearly. Question: {q}');return r.output_text,None
- except Exception as e:
-  msg=str(e)
-  if 'insufficient_quota' in msg or 'credit_balance_exhausted' in msg or '429' in msg:return None,'OpenAI API credits are exhausted. The course-grounded MBA Copilot can still work using indexed MBA material, but Ask GPT and AI synthesis require available API credits.'
-  return None,f'GPT request failed: {msg}'
+  r=c.responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-5.6-luna'),input=f'You are a general GPT assistant, not course-grounded. Subject: {subject or "MBA"}. Answer clearly. Question: {q}')
+  return r.output_text,None
+ except Exception as e:return None,gpt_error(e)
+def gpt_error(e):
+ msg=str(e)
+ if any(x in msg for x in ('insufficient_quota','credit_balance_exhausted','429')):return 'OpenAI API credits/rate limits are exhausted. Ask GPT requires available OpenAI API capacity.'
+ return f'GPT request failed: {msg}'
+def ask_gpt_more(question,filename=None,filedata=None,search=True):
+ c=gpt_client()
+ if not c:return None,'OpenAI API key is not configured on this server.'
+ try:
+  content=[]
+  if question:content.append({'type':'input_text','text':question})
+  uploaded=None
+  if filename and filedata:
+   ext=Path(filename).suffix.lower()
+   if ext in ('.png','.jpg','.jpeg','.webp','.gif'):
+    mime={'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif'}.get(ext,'image/png')
+    content.append({'type':'input_image','image_url':f'data:{mime};base64,{base64.b64encode(filedata).decode("ascii")}'} )
+   else:
+    suffix=ext or '.bin'
+    with tempfile.NamedTemporaryFile(suffix=suffix,delete=False) as f:f.write(filedata);tmp=f.name
+    try:
+     with open(tmp,'rb') as fh: uploaded=c.files.create(file=fh,purpose='user_data')
+    finally: os.unlink(tmp)
+    content.append({'type':'input_file','file_id':uploaded.id})
+  if not content: return None,'Enter a question or upload a file/image.'
+  prompt='You are the Ask More assistant in MBA Copilot. Answer as a general ChatGPT assistant. If web search is enabled, research the web as needed and use current, authoritative information. If a file or image is attached, inspect it carefully and use it as evidence. Explain uncertainty. Do not claim the answer is course-grounded. The user may ask any general question.'
+  inp=[{'role':'system','content':prompt},{'role':'user','content':content}]
+  tools=[{'type':'web_search'}] if search else []
+  r=c.responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-5.6-luna'),input=inp,tools=tools)
+  return r.output_text,None
+ except Exception as e:return None,gpt_error(e)
 def heuristic_answer(q,refs,concept):
  core={'fixed cost':'A fixed cost does not change with activity within the relevant range.','variable cost':'A variable cost changes with the level of activity.','contribution':'Contribution equals selling price minus variable cost per unit.','break-even':'Break-even is the activity level where contribution covers fixed costs and profit is zero.'}.get(concept,f"The supplied material contains evidence related to '{concept}'.")
- evidence=refs[0]["text"][:1200] if refs else 'Not established in the supplied course material.'
+ evidence=refs[0]['text'][:1200] if refs else 'Not established in the supplied course material.'
  return f'''## 📖 Simple Meaning\n{core}\n\n## 📚 Course Evidence\n{evidence}\n\n## 🧠 Memorize on Priority\n**Must Know:** {core}\n**High Priority:** Understand the distinction from related cost/concept terms.\n**Understand:** Be able to apply it to a business case.\n\n## 🎯 Exam Priority\nFocus first on the definition, distinction, formula where applicable, and worked case examples in the cited material.\n\n## ❓ Likely Exam Questions\n1. Define {concept}.\n2. Differentiate {concept} from a related concept.\n3. Apply {concept} to a business case.\n4. Explain or calculate the relevant metric using supplied case data.\n\n## 🏢 Real Business Use\nGeneral business application; this section is not claimed as a direct quote from the course material.\n\n## ⚠️ Common Confusion\nDo not treat every number in a retrieved case as evidence about the concept. Use only the figures and statements directly connected to the question.\n\n## ⚡ 30-Second Revision\n{core}\n\n[[SOURCE 1]]'''
 def answer(q,subject=None,mode='Teach Me'):
  concept,_=detect_concept(q);items=retrieve(q,subject);refs=[ref(x,i) for i,x in enumerate(items)]
@@ -94,23 +120,20 @@ def answer(q,subject=None,mode='Teach Me'):
  key=os.getenv('OPENAI_API_KEY')
  if key:
   try:
-   from openai import OpenAI;evidence='\n'.join(f"[SOURCE {i+1}] {r['document']} | {r['locator']} | {r['text']}" for i,r in enumerate(refs));prompt=f'''You are MBA Copilot. Answer ONLY from the supplied MBA course evidence. Question: {q}. Subject: {subject or 'All Subjects'}. Mode: {mode}. Relevance is the highest priority. For a definition question such as "what is X", use the clearest definitional/explanatory source first. Do NOT use a case table, financial statement, exhibit, bill of materials, or isolated number merely because it contains the words X. If the supplied passages do not directly establish the answer, say "Not established in the supplied course material." Never invent course facts. Do not combine unrelated passages to manufacture an answer. Structure: 📖 Simple Meaning; 📚 Course Material; 💡 Relevant Example; 🧮 How It Works/Formula if relevant; 🧠 Memorize on Priority with Must Know/High Priority/Understand; 🎯 Exam Priority; ❓ 4-6 likely exam questions; 🏢 Real Business Use (label general application if not course-derived); ⚠️ Common Confusion; ⚡ 30-Second Revision. Insert [[SOURCE N]] only when that source directly supports the sentence. Evidence:\n{evidence}''';r=OpenAI(api_key=key).responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-4.1-mini'),input=prompt);return {'answer':r.output_text,'sources':refs,'concept':concept,'grounded':True}
-  except Exception as e:
-   if not any(x in str(e) for x in ('insufficient_quota','credit_balance_exhausted','429')):pass
+   from openai import OpenAI;evidence='\n'.join(f"[SOURCE {i+1}] {r['document']} | {r['locator']} | {r['text']}" for i,r in enumerate(refs));prompt=f'''You are MBA Copilot. Answer ONLY from the supplied MBA course evidence. Question: {q}. Subject: {subject or 'All Subjects'}. Mode: {mode}. Relevance is the highest priority. For a definition question such as "what is X", use the clearest definitional/explanatory source first. Do NOT use a case table, financial statement, exhibit, bill of materials, or isolated number merely because it contains the words X. If the supplied passages do not directly establish the answer, say "Not established in the supplied course material." Never invent course facts. Do not combine unrelated passages to manufacture an answer. Structure: 📖 Simple Meaning; 📚 Course Material; 💡 Relevant Example; 🧮 How It Works/Formula if relevant; 🧠 Memorize on Priority with Must Know/High Priority/Understand; 🎯 Exam Priority; ❓ 4-6 likely exam questions; 🏢 Real Business Use (label general application if not course-derived); ⚠️ Common Confusion; ⚡ 30-Second Revision. Insert [[SOURCE N]] only when that source directly supports the sentence. Evidence:\n{evidence}''';r=OpenAI(api_key=key).responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-5.6-luna'),input=prompt);return {'answer':r.output_text,'sources':refs,'concept':concept,'grounded':True}
+  except Exception:pass
  return {'answer':heuristic_answer(q,refs,concept),'sources':refs,'concept':concept,'grounded':True,'ai_synthesis':False}
 def admin_users():
  raw=os.getenv('ADMIN_USERS','')
  try:
-  data=json.loads(raw) if raw else {}
-  return {str(k).strip().casefold():str(v) for k,v in data.items() if k and v}
+  data=json.loads(raw) if raw else {};return {str(k).strip().casefold():str(v) for k,v in data.items() if k and v}
  except Exception:return {}
 def admin_login(email_addr,access_code):
- users=admin_users();e=norm(email_addr).casefold();
+ users=admin_users();e=norm(email_addr).casefold()
  if not e or e not in users or not secrets.compare_digest(str(access_code or ''),users[e]):return None
  token=secrets.token_urlsafe(32);ADMIN_SESSIONS[token]={'email':e,'expires':time.time()+SESSION_TTL};return token
 def admin_session(headers):
- raw=headers.get('Cookie','')
- try:c=http.cookies.SimpleCookie();c.load(raw);token=c.get('mba_admin_session').value if c.get('mba_admin_session') else ''
+ try:c=http.cookies.SimpleCookie();c.load(headers.get('Cookie',''));token=c.get('mba_admin_session').value if c.get('mba_admin_session') else ''
  except Exception:token=''
  s=ADMIN_SESSIONS.get(token)
  if not s:return None
@@ -155,14 +178,28 @@ class Handler(BaseHTTPRequestHandler):
    try:b=json.loads(raw or b'{}');token=admin_login(b.get('email',''),b.get('access_code',''))
    except Exception:token=None
    if not token:self.send_json({'error':'Invalid admin credentials or account not authorized.'},401);return
-   cookie=f'mba_admin_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}'
-   self.send_json({'ok':True,'message':'Admin access granted.'},200,[cookie]);return
+   cookie=f'mba_admin_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}';self.send_json({'ok':True,'message':'Admin access granted.'},200,[cookie]);return
   if path=='/api/admin/logout':
-   rawcookie=self.headers.get('Cookie','')
-   try:c=http.cookies.SimpleCookie();c.load(rawcookie);token=c.get('mba_admin_session').value if c.get('mba_admin_session') else '';ADMIN_SESSIONS.pop(token,None)
+   try:c=http.cookies.SimpleCookie();c.load(self.headers.get('Cookie',''));token=c.get('mba_admin_session').value if c.get('mba_admin_session') else '';ADMIN_SESSIONS.pop(token,None)
    except Exception:pass
    self.send_json({'ok':True},200,['mba_admin_session=; Path=/; HttpOnly; Max-Age=0']);return
   if path=='/api/upload':out,status=upload(raw,self.headers.get('Content-Type',''),admin_session(self.headers));self.send_json(out,status);return
+  if path=='/api/ask-gpt-more':
+   ctype=self.headers.get('Content-Type','')
+   if ctype.lower().startswith('multipart/form-data'):
+    msg=email.message_from_bytes(b'Content-Type: '+ctype.encode()+b'\r\n\r\n'+raw);fields={};filedata=None;filename=None
+    for part in msg.walk():
+     cd=part.get('Content-Disposition','')
+     if 'form-data' not in cd:continue
+     name=part.get_param('name',header='content-disposition');fn=part.get_filename();data=part.get_payload(decode=True) or b''
+     if fn and not filename:filename=fn;filedata=data
+     elif not fn:fields[name]=data.decode('utf-8','ignore')
+    text,err=ask_gpt_more(fields.get('question','').strip(),filename,filedata,fields.get('search','true').lower()!='false')
+   else:
+    try:b=json.loads(raw or b'{}')
+    except Exception:self.send_json({'error':'Invalid JSON.'},400);return
+    text,err=ask_gpt_more(str(b.get('question','')).strip(),None,None,bool(b.get('search',True)))
+   self.send_json({'error':err},400) if err else self.send_json({'answer':text,'ai':True,'mode':'Ask GPT — Ask More','grounded':False,'web_search':True if 'search' not in locals() else True});return
   try:body=json.loads(raw or b'{}')
   except Exception:self.send_json({'error':'Invalid JSON.'},400);return
   q=str(body.get('question','')).strip();subject=body.get('subject');mode=body.get('mode','Teach Me')
