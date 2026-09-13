@@ -88,6 +88,12 @@ def ask_gpt_more(question,filename=None,filedata=None,search=True,ai_mode='hybri
  c=gpt_client()
  if not c:return None,'OpenAI API key is not configured on this server.'
  try:
+  # The current UI embeds the selected mode instruction in the request. Detect it server-side too,
+  # so Generative/Analytical/Hybrid behavior cannot silently fall back to a generic assistant.
+  qlower=(question or '').lower()
+  if 'generative ai mode' in qlower: ai_mode='generative'
+  elif 'analytical ai mode' in qlower: ai_mode='analytical'
+  elif 'hybrid mode' in qlower: ai_mode='hybrid'
   content=[]
   if question:content.append({'type':'input_text','text':question})
   uploaded=None
@@ -105,11 +111,11 @@ def ask_gpt_more(question,filename=None,filedata=None,search=True,ai_mode='hybri
     content.append({'type':'input_file','file_id':uploaded.id})
   if not content:return None,'Enter a question or upload a file/image.'
   mode_instructions={
-   'analytical':'''You are operating as ANALYTICAL AI. Your primary job is to reason and analyze. Break problems into logical steps; inspect data; calculate metrics; compare alternatives; identify assumptions, correlations, trends, risks, trade-offs and root causes; and finish with evidence-based conclusions and actionable recommendations. When numbers are available, calculate them rather than merely describing them. Show formulas, tables or structured comparisons when useful. Do not invent missing data.''',
-   'generative':'''You are operating as GENERATIVE AI. Your primary job is to CREATE the requested output, not merely explain how to create it. If the user asks for an email, write the complete email. If they ask for a report, produce the report. If they ask for ideas, generate multiple concrete ideas. If they ask for a presentation, provide slide-by-slide content. If they ask to rewrite, return the rewritten version. If they ask for code, provide working code. Follow requested tone, audience, format and length. Be original, useful and specific. Do not answer with a generic explanation when the user is asking you to create something.''',
-   'hybrid':'''You are operating as HYBRID ANALYTICAL + GENERATIVE AI. First perform whatever analysis, reasoning, calculations or evidence assessment is needed; then CREATE the requested final output. Do not stop at analysis when the user asks for an artifact, recommendation, plan, draft, strategy, report, table, presentation or other deliverable.'''
+   'analytical':'''You are ANALYTICAL AI. Your primary job is rigorous reasoning and analysis. Analyze data, calculate metrics, compare alternatives, identify assumptions, trends, risks, trade-offs and root causes, and finish with evidence-based conclusions and actionable recommendations. When numbers are available, calculate them rather than merely describing them. Show formulas, tables or structured comparisons when useful. Never invent missing data.''',
+   'generative':'''You are GENERATIVE AI. Your primary job is to CREATE the requested output. Do not merely explain how to create it. If the user asks for an email, write the complete email. If they ask for a report, produce the report. If they ask for ideas, generate multiple concrete ideas. If they ask for a presentation, provide slide-by-slide content. If they ask to rewrite, return the rewritten version. If they ask for code, provide working code. If they ask for a business plan, strategy, proposal, assignment answer, script, table, framework or action plan, produce the actual finished deliverable. Follow the requested tone, audience, format and length. Be original, useful and specific. Do not respond with a generic explanation when the user is asking you to create something.''',
+   'hybrid':'''You are HYBRID ANALYTICAL + GENERATIVE AI. First perform whatever analysis, reasoning, calculations or evidence assessment is needed; then CREATE the requested final output. Do not stop at analysis when the user asks for an artifact, recommendation, plan, draft, strategy, report, table, presentation or other deliverable.'''
   }
-  system=mode_instructions.get(ai_mode,mode_instructions['hybrid'])+'''\n\nYou are the general Ask More assistant in MBA Copilot. You are not restricted to MBA course material. If web search is enabled, research current information when useful and distinguish researched facts from your reasoning. If files/images are attached, inspect them carefully. Follow the user's explicit request and produce a useful finished answer.''' 
+  system=mode_instructions.get(ai_mode,mode_instructions['hybrid'])+'''\n\nYou are the general Ask More assistant in MBA Copilot. You are not restricted to MBA course material. If web search is enabled, research current information when useful. If files/images are attached, inspect them carefully. Follow the user's explicit request and produce a useful finished answer.'''
   inp=[{'role':'system','content':system}]
   if conversation:
    for m in conversation[-30:]:
@@ -130,7 +136,7 @@ def answer(q,subject=None,mode='Teach Me'):
  key=os.getenv('OPENAI_API_KEY')
  if key:
   try:
-   from openai import OpenAI;evidence='\n'.join(f"[SOURCE {i+1}] {r['document']} | {r['locator']} | {r['text']}" for i,r in enumerate(refs));prompt=f'''You are MBA Copilot. Answer ONLY from the supplied MBA course evidence. Question: {q}. Subject: {subject or 'All Subjects'}. Mode: {mode}. Relevance is the highest priority. For a definition question such as "what is X", use the clearest definitional/explanatory source first. Do NOT use a case table, financial statement, exhibit, bill of materials, or isolated number merely because it contains the words X. If the supplied passages do not directly establish the answer, say "Not established in the supplied course material." Never invent course facts. Do not combine unrelated passages to manufacture an answer. Structure: 📖 Simple Meaning; 📚 Course Material; 💡 Relevant Example; 🧮 How It Works/Formula if relevant; 🧠 Memorize on Priority with Must Know/High Priority/Understand; 🎯 Exam Priority; ❓ 4-6 likely exam questions; 🏢 Real Business Use (label general application if not course-derived); ⚠️ Common Confusion; ⚡ 30-Second Revision. Insert [[SOURCE N]] only when that source directly supports the sentence. Evidence:\n{evidence}''';r=OpenAI(api_key=key).responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-5.6-luna'),input=prompt);return {'answer':r.output_text,'sources':refs,'concept':concept,'grounded':True}
+   from openai import OpenAI;evidence='\n'.join(f"[SOURCE {i+1}] {r['document']} | {r['locator']} | {r['text']}" for i,r in enumerate(refs));prompt=f'''You are MBA Copilot. Answer ONLY from the supplied MBA course evidence. Question: {q}. Subject: {subject or 'All Subjects'}. Mode: {mode}. Relevance is the highest priority. For a definition question such as "what is X", use the clearest definitional/explanatory source first. Do NOT use a case table, financial statement, exhibit, bill of materials, or isolated number merely because it contains the words X. If the supplied passages do not directly establish the answer, say "Not established in the supplied course material." Never invent course facts. Do not combine unrelated passages to manufacture an answer. Structure: 📖 Simple Meaning; 📚 Course Material; 💡 Relevant Example; 🧮 How It Works/Formula if relevant; 🧠 Memorize on Priority with Must Know/High Priority/Understand; 🎯 Exam Priority; ❓ 4-6 likely exam questions; 🏢 Real Business Use (label general application if not course-derived); ⚠️ Common Confusion; ⚡ 30-Second Revision. Insert [[SOURCE N]] only when that source directly supports the sentence. Evidence:\n{evidence}''';r=OpenAI(api_key=os.getenv('OPENAI_API_KEY')).responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-5.6-luna'),input=prompt);return {'answer':r.output_text,'sources':refs,'concept':concept,'grounded':True}
   except Exception:pass
  return {'answer':heuristic_answer(q,refs,concept),'sources':refs,'concept':concept,'grounded':True,'ai_synthesis':False}
 def admin_users():
@@ -195,9 +201,9 @@ class Handler(BaseHTTPRequestHandler):
    self.send_json({'ok':True},200,['mba_admin_session=; Path=/; HttpOnly; Max-Age=0']);return
   if path=='/api/upload':out,status=upload(raw,self.headers.get('Content-Type',''),admin_session(self.headers));self.send_json(out,status);return
   if path=='/api/ask-gpt-more':
-   ctype=self.headers.get('Content-Type','');
+   ctype=self.headers.get('Content-Type','');fields={};b={}
    if ctype.lower().startswith('multipart/form-data'):
-    msg=email.message_from_bytes(b'Content-Type: '+ctype.encode()+b'\r\n\r\n'+raw);fields={};filedata=None;filename=None
+    msg=email.message_from_bytes(b'Content-Type: '+ctype.encode()+b'\r\n\r\n'+raw);filedata=None;filename=None
     for part in msg.walk():
      cd=part.get('Content-Disposition','')
      if 'form-data' not in cd:continue
@@ -207,11 +213,15 @@ class Handler(BaseHTTPRequestHandler):
     try:conversation=json.loads(fields.get('conversation','[]'))
     except Exception:conversation=[]
     text,err=ask_gpt_more(fields.get('question','').strip(),filename,filedata,fields.get('search','true').lower()!='false',fields.get('ai_mode','hybrid'),conversation)
+    selected_mode=fields.get('ai_mode','hybrid')
    else:
     try:b=json.loads(raw or b'{}')
     except Exception:self.send_json({'error':'Invalid JSON.'},400);return
     text,err=ask_gpt_more(str(b.get('question','')).strip(),None,None,bool(b.get('search',True)),str(b.get('ai_mode','hybrid')),b.get('conversation') or [])
-   self.send_json({'error':err},400) if err else self.send_json({'answer':text,'ai':True,'mode':str(fields.get('ai_mode','hybrid')) if 'fields' in locals() else str(b.get('ai_mode','hybrid')),'grounded':False,'web_search':True});return
+    selected_mode=str(b.get('ai_mode','hybrid'))
+   if err:self.send_json({'error':err},400)
+   else:self.send_json({'answer':text,'ai':True,'mode':selected_mode,'grounded':False,'web_search':True})
+   return
   try:body=json.loads(raw or b'{}')
   except Exception:self.send_json({'error':'Invalid JSON.'},400);return
   q=str(body.get('question','')).strip();subject=body.get('subject');mode=body.get('mode','Teach Me')
@@ -226,4 +236,4 @@ class Handler(BaseHTTPRequestHandler):
 if __name__=='__main__':
  try:db.ensure_schema()
  except Exception as e:print('Database initialization warning:',e)
- port=int(os.getenv('PORT','8000'));print('MBA Copilot running on port',port);ThreadingHTTPServer(('0.0.0.0',port),serve_forever if False else ('0.0.0.0',port)).serve_forever()
+ port=int(os.getenv('PORT','8000'));print('MBA Copilot running on port',port);ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
