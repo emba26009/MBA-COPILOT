@@ -32,32 +32,34 @@ def subject_counts():
 def _subject_clause(subject,params):
     if not subject or normalize_subject(subject) in ('all subjects','all'):return ''
     params.append(subject_aliases(subject));return " AND LOWER(REPLACE(REPLACE(TRIM(d.subject),'–','-'),'—','-')) = ANY(%s)"
-def _lexical_once(q,subject,limit):
+def _lexical_once(q,subject,limit,exact_phrases=None):
     words=[w for w in re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]+",q.lower()) if len(w)>2]
-    if not words:return []
+    phrases=[normalize_subject(q)] if len(words)>=2 else []
+    phrases += [normalize_subject(x) for x in (exact_phrases or []) if normalize_subject(x)]
+    phrases=list(dict.fromkeys(phrases))
+    if not words and not phrases:return []
     clauses=[];params=[]
-    # Phrase matching is intentionally first: 'fixed cost' should find the
-    # teaching passage even when the question contains many stopwords.
-    phrase=normalize_subject(q)
-    if len(words)>=2:
-        clauses.append('p.text ILIKE %s');params.append('%'+phrase+'%')
+    for ph in phrases: clauses.append('p.text ILIKE %s');params.append('%'+ph+'%')
     clauses += ['p.text ILIKE %s']*len(words[:16]);params += ['%'+w+'%' for w in words[:16]]
-    filt=_subject_clause(subject,params);params.append(limit)
-    sql=f"SELECT p.id,d.filename AS document,d.subject,p.locator,p.text FROM passages p JOIN documents d ON d.id=p.document_id WHERE ({' OR '.join(clauses)}){filt} ORDER BY CASE WHEN p.text ILIKE %s THEN 0 ELSE 1 END,p.id DESC LIMIT %s"
-    params.insert(len(params)-1,'%'+phrase+'%')
+    filt=_subject_clause(subject,params)
+    order='CASE '+''.join(f" WHEN p.text ILIKE %s THEN {i} " for i,_ in enumerate(phrases))+' ELSE 99 END, p.id DESC'
+    params += ['%'+ph+'%' for ph in phrases]
+    params.append(limit)
+    sql=f"SELECT p.id,d.filename AS document,d.subject,p.locator,p.text FROM passages p JOIN documents d ON d.id=p.document_id WHERE ({' OR '.join(clauses)}){filt} ORDER BY {order} LIMIT %s"
     with conn() as c:
         with c.cursor(cursor_factory=RealDictCursor) as cur:cur.execute(sql,params);return [dict(r) for r in cur.fetchall()]
 def search_lexical(q,subject=None,limit=14):
     if not enabled():return []
-    rows=_lexical_once(q,subject,limit)
-    if rows:return rows
-    l=q.casefold();expansions=[]
-    if 'fixed cost' in l or 'fixed costs' in l:expansions=['fixed cost','fixed costs','relevant range','contribution','break-even']
-    elif 'variable cost' in l or 'variable costs' in l:expansions=['variable cost','variable costs','fixed cost','contribution','break-even']
-    elif 'contribution' in l:expansions=['contribution margin','contribution','selling price','variable cost','fixed cost']
-    elif 'break-even' in l or 'break even' in l:expansions=['break-even','break even','contribution','fixed cost','variable cost']
-    elif 'vrio' in l:expansions=['VRIO','valuable','rare','inimitable','organization']
-    return _lexical_once(' '.join(expansions),subject,limit) if expansions else []
+    l=q.casefold();exact=[]
+    if 'fixed cost' in l or 'fixed costs' in l:exact=['fixed cost','fixed costs','relevant range','shut down costs','fixed costs cannot be avoided']
+    elif 'variable cost' in l or 'variable costs' in l:exact=['variable cost','variable costs']
+    elif 'contribution' in l:exact=['contribution margin','contribution','selling price','variable cost']
+    elif 'break-even' in l or 'break even' in l:exact=['break-even','break even','contribution','fixed cost']
+    elif 'vrio' in l:exact=['VRIO','valuable','rare','inimitable']
+    if exact:
+        rows=_lexical_once(' '.join(exact[:2]),subject,limit,exact_phrases=exact)
+        if rows:return rows
+    return _lexical_once(q,subject,limit,exact_phrases=exact)
 def add_document(filename,subject,file_type,passages):
     with conn() as c:
         with c.cursor() as cur:
@@ -67,7 +69,8 @@ def add_document(filename,subject,file_type,passages):
 def store_embeddings(document_id,vectors):
     with conn() as c:
         with c.cursor() as cur:
-            for i,v in enumerate(vectors):cur.execute('UPDATE passages SET embedding=%s WHERE document_id=%s AND id=(SELECT id FROM passages WHERE document_id=%s ORDER BY id OFFSET %s LIMIT 1)',(str(v),document_id,document_id,i))
+            cur.execute('SELECT id FROM passages WHERE document_id=%s ORDER BY id',(document_id,));ids=[r[0] for r in cur.fetchall()]
+            for pid,v in zip(ids,vectors):cur.execute('UPDATE passages SET embedding=%s WHERE id=%s',(str(v),pid))
 def search_vector(vector,subject=None,limit=10):
     if not enabled():return []
     params=[str(vector)];filt=_subject_clause(subject,params);params.extend([str(vector),limit])
