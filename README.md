@@ -1,8 +1,8 @@
 # 🎓 MBA Copilot
 
-AI tutor grounded in your MBA course material, with a separate **Ask GPT** mode.
+AI tutor grounded in your MBA course material, with a separate **Ask GPT** mode and a secured knowledge-management portal.
 
-## Current architecture
+## Architecture
 
 GitHub → Render Web Service → Render Postgres + pgvector → OpenAI
 
@@ -10,25 +10,40 @@ GitHub → Render Web Service → Render Postgres + pgvector → OpenAI
 - 🤖 **Ask GPT** — general GPT answers
 - 📑 Clickable source references
 - 🧠 Concept-aware retrieval and relevance filtering
-- 🗄️ Hosted PostgreSQL knowledge-library foundation
+- 🔐 Individual administrator authentication
+- 🗂️ Admin document management: upload, replace, re-index and delete
+- 🗄️ Hosted PostgreSQL knowledge library
+
+## Admin access
+
+Set `ADMIN_USERS` in Render Environment Variables as a JSON object mapping authorized email addresses to private access codes. Example format:
+
+```text
+{"admin1@example.com":"private-code-1","admin2@example.com":"private-code-2"}
+```
+
+Never commit real access codes to GitHub. The browser only receives an authenticated session; the configured admin list remains server-side.
 
 ## Deploy
 
-Use the Render Blueprint in `render.yaml` or create a Render Web Service from this repository. Render supports GitHub-connected web services and automatic redeploys on pushes. Keep secrets in Render Environment Variables rather than Git.
+Use the Render Blueprint in `render.yaml` or create a Render Web Service from this repository. Render should run `python bootstrap.py`; this installs the secure admin-management routes before starting the server.
 
-## Required environment variables
+Required environment variables:
 
 - `OPENAI_API_KEY` — add in Render Environment Variables; never commit it.
+- `ADMIN_USERS` — JSON map of authorized administrator emails to private access codes.
 - `MBA_COPILOT_MODEL` — defaults to `gpt-4.1-mini`.
-- `DATABASE_URL` — populated by the Render Blueprint from the managed Postgres database.
+- `DATABASE_URL` — populated by the Render Blueprint from managed Postgres.
 
-## Next ingestion step
+## Admin workflow
 
-The database foundation is ready for the real MBA library. The next ingestion layer will upload PDFs/PPT/DOCX/XLSX/ZIP case studies, extract passages and page/slide/sheet locators, generate embeddings, and write them into Postgres/pgvector. The answer engine will then retrieve semantically relevant evidence before GPT synthesis.
+**Admin sign-in → Select subject → Upload → Extract/index → Review library → Re-index / Replace / Delete**
+
+Students can use the MBA Library and ask questions, but database-management controls require an authorized admin session.
 
 ## Local run
 
 ```bash
 pip install -r requirements.txt
-python app.py
+python bootstrap.py
 ```
