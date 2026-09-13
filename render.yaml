@@ -12,7 +12,7 @@ services:
     plan: free
     region: singapore
     buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    startCommand: python bootstrap.py
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -20,7 +20,7 @@ services:
           property: connectionString
       - key: OPENAI_API_KEY
         sync: false
-      - key: ADMIN_UPLOAD_TOKEN
+      - key: ADMIN_USERS
         sync: false
       - key: MBA_COPILOT_MODEL
         value: gpt-4.1-mini
