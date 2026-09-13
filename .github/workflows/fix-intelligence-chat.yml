@@ -1,0 +1,33 @@
+name: Fix Intelligence Chat JavaScript
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repair broken JavaScript newline regex
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+          old = 'replace(/\\\n/g'
+          new = 'replace(/\\n/g'
+          count = s.count(old)
+          if count:
+              s = s.replace(old, new)
+          p.write_text(s, encoding='utf-8')
+          print('Fixed regex occurrences:', count)
+          PY
+      - name: Commit and push
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html
+          git diff --cached --quiet || git commit -m 'Fix Intelligence chat JavaScript'
+          git push
