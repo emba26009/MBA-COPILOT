@@ -21,59 +21,70 @@ def normalize_subject(s):
     return s.replace('–','-').replace('—','-')
 def subject_aliases(subject):
     s=normalize_subject(subject)
-    aliases={s}
     groups=[
-      (['financial reporting and management accounting','frma','financial reporting & management accounting'],),
-      (['business statistics for managers','business statistics','statistics for managers'],),
-      (['behaviour in organizations','behavior in organizations','organizational behaviour','organizational behavior'],),
-      (['digital transformation','dt'],),
-      (['operations management','om'],),
-      (['artificial intelligence for business','ai for business','aib'],),
-      (['action lab: systems thinking for problem solving','systems thinking for problem solving'],),
-      (['managerial economics and macroeconomic environment','managerial economics','macroeconomics'],),
-      (['marketing management–i: marketing management using ai','marketing management-i: marketing management using ai','marketing management using ai','marketing management'],),
-      (['supply chain management','scm'],)
-    ]
+      ['financial reporting and management accounting','frma','financial reporting & management accounting'],
+      ['business statistics for managers','business statistics','statistics for managers'],
+      ['behaviour in organizations','behavior in organizations','organizational behaviour','organizational behavior'],
+      ['digital transformation','dt'],['operations management','om'],
+      ['artificial intelligence for business','ai for business','aib'],
+      ['action lab: systems thinking for problem solving','systems thinking for problem solving'],
+      ['managerial economics and macroeconomic environment','managerial economics','macroeconomics'],
+      ['marketing management-i: marketing management using ai','marketing management using ai','marketing management'],
+      ['supply chain management','scm']]
     for g in groups:
-        vals={normalize_subject(x) for x in g[0]}
-        if s in vals: return sorted(vals)
-    return sorted(aliases)
+        vals={normalize_subject(x) for x in g}
+        if s in vals:return sorted(vals)
+    return [s]
 def subjects():
     if not enabled(): return []
     with conn() as c:
         with c.cursor() as cur:
-            cur.execute('SELECT DISTINCT subject FROM documents WHERE subject IS NOT NULL AND TRIM(subject)<>\'\' ORDER BY subject'); return [r[0] for r in cur.fetchall()]
+            cur.execute('SELECT DISTINCT subject FROM documents WHERE subject IS NOT NULL AND TRIM(subject)<>\'\' ORDER BY subject');return [r[0] for r in cur.fetchall()]
 def count_passages():
     if not enabled(): return 0
     with conn() as c:
-        with c.cursor() as cur: cur.execute('SELECT COUNT(*) FROM passages'); return cur.fetchone()[0]
+        with c.cursor() as cur:cur.execute('SELECT COUNT(*) FROM passages');return cur.fetchone()[0]
 def _subject_clause(subject,params):
-    if not subject or normalize_subject(subject) in ('all subjects','all'): return ''
-    aliases=subject_aliases(subject);params.append(aliases)
-    return " AND LOWER(REPLACE(REPLACE(TRIM(d.subject),'–','-'),'—','-')) = ANY(%s)"
-def search_lexical(q,subject=None,limit=14):
-    if not enabled(): return []
+    if not subject or normalize_subject(subject) in ('all subjects','all'):return ''
+    params.append(subject_aliases(subject));return " AND LOWER(REPLACE(REPLACE(TRIM(d.subject),'–','-'),'—','-')) = ANY(%s)"
+def _lexical_once(q,subject,limit):
     words=[w for w in re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]+",q.lower()) if len(w)>2]
     if not words:return []
     clauses=[];params=[]
-    for w in words[:12]: clauses.append('p.text ILIKE %s');params.append('%'+w+'%')
-    subject_sql=_subject_clause(subject,params);params.append(limit)
-    sql=f'''SELECT p.id,d.filename AS document,d.subject,p.locator,p.text FROM passages p JOIN documents d ON d.id=p.document_id WHERE ({' OR '.join(clauses)}){subject_sql} ORDER BY p.id DESC LIMIT %s'''
+    for w in words[:16]:clauses.append('p.text ILIKE %s');params.append('%'+w+'%')
+    filt=_subject_clause(subject,params);params.append(limit)
+    sql=f'''SELECT p.id,d.filename AS document,d.subject,p.locator,p.text FROM passages p JOIN documents d ON d.id=p.document_id WHERE ({' OR '.join(clauses)}){filt} ORDER BY p.id DESC LIMIT %s'''
     with conn() as c:
-        with c.cursor(cursor_factory=RealDictCursor) as cur: cur.execute(sql,params);return [dict(r) for r in cur.fetchall()]
+        with c.cursor(cursor_factory=RealDictCursor) as cur:cur.execute(sql,params);return [dict(r) for r in cur.fetchall()]
+def search_lexical(q,subject=None,limit=14):
+    if not enabled():return []
+    rows=_lexical_once(q,subject,limit)
+    if rows:return rows
+    # Concept recovery: short natural-language questions can miss material when
+    # stopwords dominate the query. Retry using the course concept and its common terms.
+    l=q.casefold()
+    expansions=[]
+    if 'fixed cost' in l or 'fixed costs' in l:expansions=['fixed cost','fixed costs','relevant range','contribution','break-even']
+    elif 'variable cost' in l or 'variable costs' in l:expansions=['variable cost','variable costs','fixed cost','contribution','break-even']
+    elif 'contribution' in l:expansions=['contribution margin','contribution','selling price','variable cost','fixed cost']
+    elif 'break-even' in l or 'break even' in l:expansions=['break-even','break even','contribution','fixed cost','variable cost']
+    elif 'vrio' in l:expansions=['VRIO','valuable','rare','inimitable','organization']
+    if expansions:
+        return _lexical_once(' '.join(expansions),subject,limit)
+    return []
 def add_document(filename,subject,file_type,passages):
     with conn() as c:
         with c.cursor() as cur:
             cur.execute('INSERT INTO documents(filename,subject,file_type) VALUES(%s,%s,%s) RETURNING id',(filename,subject,file_type));did=cur.fetchone()[0]
-            for locator,text in passages: cur.execute('INSERT INTO passages(document_id,locator,text) VALUES(%s,%s,%s)',(did,locator,text))
+            for locator,text in passages:cur.execute('INSERT INTO passages(document_id,locator,text) VALUES(%s,%s,%s)',(did,locator,text))
             return did
 def store_embeddings(document_id,vectors):
     with conn() as c:
         with c.cursor() as cur:
-            for i,v in enumerate(vectors): cur.execute('UPDATE passages SET embedding=%s WHERE document_id=%s AND id=(SELECT id FROM passages WHERE document_id=%s ORDER BY id OFFSET %s LIMIT 1)',(str(v),document_id,document_id,i))
+            for i,v in enumerate(vectors):cur.execute('UPDATE passages SET embedding=%s WHERE document_id=%s AND id=(SELECT id FROM passages WHERE document_id=%s ORDER BY id OFFSET %s LIMIT 1)',(str(v),document_id,document_id,i))
 def search_vector(vector,subject=None,limit=10):
-    if not enabled(): return []
+    if not enabled():return []
     params=[str(vector)];filt=_subject_clause(subject,params);params.extend([str(vector),limit])
     sql=f'''SELECT p.id,d.filename AS document,d.subject,p.locator,p.text,1-(p.embedding <=> %s::vector) AS similarity FROM passages p JOIN documents d ON d.id=p.document_id WHERE p.embedding IS NOT NULL{filt} ORDER BY p.embedding <=> %s::vector LIMIT %s'''
     with conn() as c:
-        with c.cursor(cursor_factory=RealDictCursor) as cur: cur.execute(sql,params);return [dict(r) for r in cur.fetchall()]
+        with c.cursor(cursor_factory=RealDictCursor) as cur:cur.execute(sql,params);return [dict(r) for r in cur.fetchall()]
