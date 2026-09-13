@@ -1,20 +1,34 @@
-# MBA Copilot
+# 🎓 MBA Copilot
 
-AI tutor for an MBA course library.
+AI tutor grounded in your MBA course material, with a separate **Ask GPT** mode.
 
-## Two answer modes
-- 📚 **Ask MBA Copilot** — grounded in uploaded course material, with source references.
-- 🤖 **Ask GPT** — general-purpose GPT answer, not restricted to the course library.
+## Current architecture
 
-## Current focus
-V8.4 baseline with clickable references and separate Ask GPT mode. The next iteration will strengthen relevance filtering and production RAG.
+GitHub → Render Web Service → Render Postgres + pgvector → OpenAI
 
-## Security
-Course files and secrets should not be committed to this public repository. Configure `OPENAI_API_KEY` as a hosting-platform environment variable.
+- 📚 **Ask MBA Copilot** — course-grounded answers
+- 🤖 **Ask GPT** — general GPT answers
+- 📑 Clickable source references
+- 🧠 Concept-aware retrieval and relevance filtering
+- 🗄️ Hosted PostgreSQL knowledge-library foundation
 
-## Run locally
-`pip install -r requirements.txt`
+## Deploy
 
-`python app.py`
+Use the Render Blueprint in `render.yaml` or create a Render Web Service from this repository. Render supports GitHub-connected web services and automatic redeploys on pushes. Keep secrets in Render Environment Variables rather than Git.
 
-The server uses the hosting platform's `PORT` and binds to `0.0.0.0`.
+## Required environment variables
+
+- `OPENAI_API_KEY` — add in Render Environment Variables; never commit it.
+- `MBA_COPILOT_MODEL` — defaults to `gpt-4.1-mini`.
+- `DATABASE_URL` — populated by the Render Blueprint from the managed Postgres database.
+
+## Next ingestion step
+
+The database foundation is ready for the real MBA library. The next ingestion layer will upload PDFs/PPT/DOCX/XLSX/ZIP case studies, extract passages and page/slide/sheet locators, generate embeddings, and write them into Postgres/pgvector. The answer engine will then retrieve semantically relevant evidence before GPT synthesis.
+
+## Local run
+
+```bash
+pip install -r requirements.txt
+python app.py
+```
