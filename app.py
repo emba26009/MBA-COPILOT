@@ -84,7 +84,7 @@ def gpt_error(e):
  msg=str(e)
  if any(x in msg for x in ('insufficient_quota','credit_balance_exhausted','429')):return 'OpenAI API credits/rate limits are exhausted. Ask GPT requires available OpenAI API capacity.'
  return f'GPT request failed: {msg}'
-def ask_gpt_more(question,filename=None,filedata=None,search=True):
+def ask_gpt_more(question,filename=None,filedata=None,search=True,ai_mode='hybrid',conversation=None):
  c=gpt_client()
  if not c:return None,'OpenAI API key is not configured on this server.'
  try:
@@ -103,9 +103,19 @@ def ask_gpt_more(question,filename=None,filedata=None,search=True):
      with open(tmp,'rb') as fh: uploaded=c.files.create(file=fh,purpose='user_data')
     finally: os.unlink(tmp)
     content.append({'type':'input_file','file_id':uploaded.id})
-  if not content: return None,'Enter a question or upload a file/image.'
-  prompt='You are the Ask More assistant in MBA Copilot. Answer as a general ChatGPT assistant. If web search is enabled, research the web as needed and use current, authoritative information. If a file or image is attached, inspect it carefully and use it as evidence. Explain uncertainty. Do not claim the answer is course-grounded. The user may ask any general question.'
-  inp=[{'role':'system','content':prompt},{'role':'user','content':content}]
+  if not content:return None,'Enter a question or upload a file/image.'
+  mode_instructions={
+   'analytical':'''You are operating as ANALYTICAL AI. Your primary job is to reason and analyze. Break problems into logical steps; inspect data; calculate metrics; compare alternatives; identify assumptions, correlations, trends, risks, trade-offs and root causes; and finish with evidence-based conclusions and actionable recommendations. When numbers are available, calculate them rather than merely describing them. Show formulas, tables or structured comparisons when useful. Do not invent missing data.''',
+   'generative':'''You are operating as GENERATIVE AI. Your primary job is to CREATE the requested output, not merely explain how to create it. If the user asks for an email, write the complete email. If they ask for a report, produce the report. If they ask for ideas, generate multiple concrete ideas. If they ask for a presentation, provide slide-by-slide content. If they ask to rewrite, return the rewritten version. If they ask for code, provide working code. Follow requested tone, audience, format and length. Be original, useful and specific. Do not answer with a generic explanation when the user is asking you to create something.''',
+   'hybrid':'''You are operating as HYBRID ANALYTICAL + GENERATIVE AI. First perform whatever analysis, reasoning, calculations or evidence assessment is needed; then CREATE the requested final output. Do not stop at analysis when the user asks for an artifact, recommendation, plan, draft, strategy, report, table, presentation or other deliverable.'''
+  }
+  system=mode_instructions.get(ai_mode,mode_instructions['hybrid'])+'''\n\nYou are the general Ask More assistant in MBA Copilot. You are not restricted to MBA course material. If web search is enabled, research current information when useful and distinguish researched facts from your reasoning. If files/images are attached, inspect them carefully. Follow the user's explicit request and produce a useful finished answer.''' 
+  inp=[{'role':'system','content':system}]
+  if conversation:
+   for m in conversation[-30:]:
+    role='assistant' if m.get('role')=='assistant' else 'user'
+    inp.append({'role':role,'content':[{'type':'input_text','text':str(m.get('text',''))}]})
+  inp.append({'role':'user','content':content})
   tools=[{'type':'web_search'}] if search else []
   r=c.responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-5.6-luna'),input=inp,tools=tools)
   return r.output_text,None
@@ -185,7 +195,7 @@ class Handler(BaseHTTPRequestHandler):
    self.send_json({'ok':True},200,['mba_admin_session=; Path=/; HttpOnly; Max-Age=0']);return
   if path=='/api/upload':out,status=upload(raw,self.headers.get('Content-Type',''),admin_session(self.headers));self.send_json(out,status);return
   if path=='/api/ask-gpt-more':
-   ctype=self.headers.get('Content-Type','')
+   ctype=self.headers.get('Content-Type','');
    if ctype.lower().startswith('multipart/form-data'):
     msg=email.message_from_bytes(b'Content-Type: '+ctype.encode()+b'\r\n\r\n'+raw);fields={};filedata=None;filename=None
     for part in msg.walk():
@@ -194,12 +204,14 @@ class Handler(BaseHTTPRequestHandler):
      name=part.get_param('name',header='content-disposition');fn=part.get_filename();data=part.get_payload(decode=True) or b''
      if fn and not filename:filename=fn;filedata=data
      elif not fn:fields[name]=data.decode('utf-8','ignore')
-    text,err=ask_gpt_more(fields.get('question','').strip(),filename,filedata,fields.get('search','true').lower()!='false')
+    try:conversation=json.loads(fields.get('conversation','[]'))
+    except Exception:conversation=[]
+    text,err=ask_gpt_more(fields.get('question','').strip(),filename,filedata,fields.get('search','true').lower()!='false',fields.get('ai_mode','hybrid'),conversation)
    else:
     try:b=json.loads(raw or b'{}')
     except Exception:self.send_json({'error':'Invalid JSON.'},400);return
-    text,err=ask_gpt_more(str(b.get('question','')).strip(),None,None,bool(b.get('search',True)))
-   self.send_json({'error':err},400) if err else self.send_json({'answer':text,'ai':True,'mode':'Ask GPT — Ask More','grounded':False,'web_search':True if 'search' not in locals() else True});return
+    text,err=ask_gpt_more(str(b.get('question','')).strip(),None,None,bool(b.get('search',True)),str(b.get('ai_mode','hybrid')),b.get('conversation') or [])
+   self.send_json({'error':err},400) if err else self.send_json({'answer':text,'ai':True,'mode':str(fields.get('ai_mode','hybrid')) if 'fields' in locals() else str(b.get('ai_mode','hybrid')),'grounded':False,'web_search':True});return
   try:body=json.loads(raw or b'{}')
   except Exception:self.send_json({'error':'Invalid JSON.'},400);return
   q=str(body.get('question','')).strip();subject=body.get('subject');mode=body.get('mode','Teach Me')
@@ -214,4 +226,4 @@ class Handler(BaseHTTPRequestHandler):
 if __name__=='__main__':
  try:db.ensure_schema()
  except Exception as e:print('Database initialization warning:',e)
- port=int(os.getenv('PORT','8000'));print('MBA Copilot running on port',port);ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
+ port=int(os.getenv('PORT','8000'));print('MBA Copilot running on port',port);ThreadingHTTPServer(('0.0.0.0',port),serve_forever if False else ('0.0.0.0',port)).serve_forever()
