@@ -1,11 +1,11 @@
-import os,re,json,tempfile,email
+import os,re,json,tempfile,email,secrets,http.cookies,time
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlparse
 import db
 BASE=Path(__file__).resolve().parent; DATA=BASE/'data'; KNOWLEDGE=DATA/'knowledge.json'
 INDEX=json.loads(KNOWLEDGE.read_text(encoding='utf-8')) if KNOWLEDGE.exists() else []
-SOURCE_CACHE={}
+SOURCE_CACHE={}; ADMIN_SESSIONS={}; SESSION_TTL=8*60*60
 PREFERRED=["Behaviour in Organizations","Financial Reporting and Management Accounting","Business Statistics for Managers","Digital Transformation","Operations Management","Action Lab: Systems Thinking for Problem Solving","Artificial Intelligence for Business","Managerial Economics and Macroeconomic Environment","Marketing Management–I: Marketing Management Using AI","Supply Chain Management"]
 CONCEPTS={'fixed cost':['fixed cost','fixed costs','relevant range','variable cost','contribution','break-even'],'variable cost':['variable cost','variable costs','fixed cost','contribution','break-even'],'contribution':['contribution','contribution margin','selling price','variable cost','fixed cost','break-even'],'break-even':['break-even','break even','contribution','fixed cost','variable cost'],'vrio':['vrio','valuable','rare','inimitable','organization','competitive advantage'],'five forces':['five forces','porter','rivalry','buyers','suppliers','substitutes','new entrants'],'confidence interval':['confidence interval','confidence intervals','sample','population','margin of error'],'hypothesis testing':['hypothesis testing','null hypothesis','alternative hypothesis','p-value','type i','type ii'],'clt':['central limit theorem','clt','sampling distribution','sample mean'],'forecasting':['forecast','forecasting','moving average','exponential smoothing','demand'],'inventory':['inventory','eoq','safety stock','reorder point','holding cost'],'capacity':['capacity','bottleneck','utilization','process capacity']}
 STOP=set('the and for with that this from into about what how why are was were can could would should have has had not your their our they them you of to in on at by an is be as a or if it its we i a this these those which who where when than then also using used use more most very'.split())
@@ -53,16 +53,12 @@ def retrieve(q,subject=None,limit=10):
   try:items=db.search_lexical(q,None,limit*6)
   except Exception:items=[]
  if not items:items=INDEX
- # IMPORTANT: the selected subject is a hard boundary. We never fall back to
- # another subject merely because it has a better lexical match.
  filtered=_filter_items(items,subject)
  return _rank(q,filtered,limit)
 def subjects():
  vals=db.subjects() if db.enabled() else []
  if not vals:vals=list(dict.fromkeys((x.get('subject') or x.get('course')) for x in INDEX if x.get('subject') or x.get('course')))
- vals=[x for x in vals if x]
- # Preserve the canonical display names while matching case/dash variants.
- bykey={subject_key(x):x for x in vals};ordered=[]
+ vals=[x for x in vals if x];bykey={subject_key(x):x for x in vals};ordered=[]
  for p in PREFERRED:
   if subject_key(p) in bykey:ordered.append(bykey[subject_key(p)])
  ordered.extend(x for x in vals if subject_key(x) not in {subject_key(y) for y in ordered})
@@ -92,9 +88,26 @@ def answer(q,subject=None,mode='Teach Me'):
   except Exception as e:
    if not any(x in str(e) for x in ('insufficient_quota','credit_balance_exhausted','429')):pass
  return {'answer':heuristic_answer(q,refs,concept),'sources':refs,'concept':concept,'grounded':True,'ai_synthesis':False}
-def upload(body,ctype,token):
- expected=os.getenv('ADMIN_UPLOAD_TOKEN')
- if not expected or token!=expected:return {'error':'Upload authorization failed. Set ADMIN_UPLOAD_TOKEN on the server.'},403
+def admin_users():
+ raw=os.getenv('ADMIN_USERS','')
+ try:
+  data=json.loads(raw) if raw else {}
+  return {str(k).strip().casefold():str(v) for k,v in data.items() if k and v}
+ except Exception:return {}
+def admin_login(email_addr,access_code):
+ users=admin_users();e=norm(email_addr).casefold();
+ if not e or e not in users or not secrets.compare_digest(str(access_code or ''),users[e]):return None
+ token=secrets.token_urlsafe(32);ADMIN_SESSIONS[token]={'email':e,'expires':time.time()+SESSION_TTL};return token
+def admin_session(headers):
+ raw=headers.get('Cookie','')
+ try:c=http.cookies.SimpleCookie();c.load(raw);token=c.get('mba_admin_session').value if c.get('mba_admin_session') else ''
+ except Exception:token=''
+ s=ADMIN_SESSIONS.get(token)
+ if not s:return None
+ if s['expires']<time.time():ADMIN_SESSIONS.pop(token,None);return None
+ s['expires']=time.time()+SESSION_TTL;return s
+def upload(body,ctype,admin):
+ if not admin:return {'error':'Admin authentication required.'},401
  msg=email.message_from_bytes(b'Content-Type: '+ctype.encode()+b'\r\n\r\n'+body);fields={};files=[]
  for part in msg.walk():
   cd=part.get('Content-Disposition','')
@@ -108,14 +121,19 @@ def upload(body,ctype,token):
   with tempfile.NamedTemporaryFile(suffix=Path(fn).suffix,delete=False) as f:f.write(data);tmp=f.name
   try:results.extend(ingest_path(tmp,subject))
   finally:os.unlink(tmp)
- return {'ok':True,'subject':subject,'results':results},200
+ return {'ok':True,'subject':subject,'uploaded_by':admin['email'],'results':results},200
 class Handler(BaseHTTPRequestHandler):
- def send_json(self,obj,status=200):
-  b=json.dumps(obj,ensure_ascii=False).encode();self.send_response(status);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b)
+ def send_json(self,obj,status=200,cookies=None):
+  b=json.dumps(obj,ensure_ascii=False).encode();self.send_response(status);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Length',str(len(b)));self.send_header('Cache-Control','no-store')
+  if cookies:
+   for c in cookies:self.send_header('Set-Cookie',c)
+  self.end_headers();self.wfile.write(b)
  def do_GET(self):
   path=urlparse(self.path).path
   if path=='/health':self.send_json({'ok':True,'database':db.enabled(),'chunks':db.count_passages() if db.enabled() else len(INDEX)});return
-  if path=='/api/meta':self.send_json({'subjects':subjects(),'chunks':db.count_passages() if db.enabled() else len(INDEX),'ai_configured':bool(os.getenv('OPENAI_API_KEY')),'database_configured':db.enabled(),'upload_enabled':bool(os.getenv('ADMIN_UPLOAD_TOKEN'))});return
+  if path=='/api/meta':self.send_json({'subjects':subjects(),'chunks':db.count_passages() if db.enabled() else len(INDEX),'ai_configured':bool(os.getenv('OPENAI_API_KEY')),'database_configured':db.enabled(),'admin_auth_configured':bool(admin_users())});return
+  if path=='/api/admin/me':
+   s=admin_session(self.headers);self.send_json({'authenticated':bool(s),'email':s.get('email') if s else None});return
   if path.startswith('/api/source/'):
    item=SOURCE_CACHE.get(path.rsplit('/',1)[-1]);self.send_json(ref(item) if item else {'error':'Reference expired. Ask the question again.'},200 if item else 404);return
   if path in ('/','/index.html'):
@@ -123,7 +141,18 @@ class Handler(BaseHTTPRequestHandler):
   self.send_response(404);self.end_headers()
  def do_POST(self):
   path=urlparse(self.path).path;n=int(self.headers.get('Content-Length',0));raw=self.rfile.read(n)
-  if path=='/api/upload':out,status=upload(raw,self.headers.get('Content-Type',''),self.headers.get('X-Admin-Token',''));self.send_json(out,status);return
+  if path=='/api/admin/login':
+   try:b=json.loads(raw or b'{}');token=admin_login(b.get('email',''),b.get('access_code',''))
+   except Exception:token=None
+   if not token:self.send_json({'error':'Invalid admin credentials or account not authorized.'},401);return
+   cookie=f'mba_admin_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}'
+   self.send_json({'ok':True,'message':'Admin access granted.'},200,[cookie]);return
+  if path=='/api/admin/logout':
+   s=admin_session(self.headers);rawcookie=self.headers.get('Cookie','')
+   try:c=http.cookies.SimpleCookie();c.load(rawcookie);token=c.get('mba_admin_session').value if c.get('mba_admin_session') else '';ADMIN_SESSIONS.pop(token,None)
+   except Exception:pass
+   self.send_json({'ok':True},200,['mba_admin_session=; Path=/; HttpOnly; Max-Age=0']) ;return
+  if path=='/api/upload':out,status=upload(raw,self.headers.get('Content-Type',''),admin_session(self.headers));self.send_json(out,status);return
   try:body=json.loads(raw or b'{}')
   except Exception:self.send_json({'error':'Invalid JSON.'},400);return
   q=str(body.get('question','')).strip();subject=body.get('subject');mode=body.get('mode','Teach Me')
