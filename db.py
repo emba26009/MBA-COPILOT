@@ -19,6 +19,25 @@ def ensure_schema():
 def normalize_subject(s):
     s=re.sub(r'\s+',' ',str(s or '')).strip().casefold()
     return s.replace('–','-').replace('—','-')
+def subject_aliases(subject):
+    s=normalize_subject(subject)
+    aliases={s}
+    groups=[
+      (['financial reporting and management accounting','frma','financial reporting & management accounting'],),
+      (['business statistics for managers','business statistics','statistics for managers'],),
+      (['behaviour in organizations','behavior in organizations','organizational behaviour','organizational behavior'],),
+      (['digital transformation','dt'],),
+      (['operations management','om'],),
+      (['artificial intelligence for business','ai for business','aib'],),
+      (['action lab: systems thinking for problem solving','systems thinking for problem solving'],),
+      (['managerial economics and macroeconomic environment','managerial economics','macroeconomics'],),
+      (['marketing management–i: marketing management using ai','marketing management-i: marketing management using ai','marketing management using ai','marketing management'],),
+      (['supply chain management','scm'],)
+    ]
+    for g in groups:
+        vals={normalize_subject(x) for x in g[0]}
+        if s in vals: return sorted(vals)
+    return sorted(aliases)
 def subjects():
     if not enabled(): return []
     with conn() as c:
@@ -30,7 +49,8 @@ def count_passages():
         with c.cursor() as cur: cur.execute('SELECT COUNT(*) FROM passages'); return cur.fetchone()[0]
 def _subject_clause(subject,params):
     if not subject or normalize_subject(subject) in ('all subjects','all'): return ''
-    params.append(normalize_subject(subject)); return ' AND LOWER(REPLACE(REPLACE(TRIM(d.subject),\'–\',\'-\'),\'—\',\'-\'))=%s'
+    aliases=subject_aliases(subject);params.append(aliases)
+    return " AND LOWER(REPLACE(REPLACE(TRIM(d.subject),'–','-'),'—','-')) = ANY(%s)"
 def search_lexical(q,subject=None,limit=14):
     if not enabled(): return []
     words=[w for w in re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]+",q.lower()) if len(w)>2]
