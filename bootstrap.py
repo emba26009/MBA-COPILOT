@@ -8,6 +8,16 @@ app.detect_concept = case_retrieval.detect_concept
 app.retrieve = case_retrieval.retrieve
 app.heuristic_answer = case_retrieval.heuristic_answer
 
+# The original Digital Transformation ZIP contains the Uber case, but the production
+# database may have been created before that ZIP was indexed. Seed the case once at
+# startup so a named Uber query never falls through to an unrelated case.
+try:
+    import uber_seed
+    ok, msg = uber_seed.seed_uber_case()
+    print('Uber knowledge-base seed:', msg)
+except Exception as e:
+    print('Uber knowledge-base seed warning:', e)
+
 install(app.Handler)
 _original_do_get = app.Handler.do_GET
 
