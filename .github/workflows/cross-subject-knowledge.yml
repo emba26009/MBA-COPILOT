@@ -1,8 +1,8 @@
 name: Enable Cross-Subject Knowledge
 on:
+  workflow_dispatch:
   push:
     branches: [main]
-  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -10,35 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Update retrieval and grounding
+      - name: Apply cross-subject patch
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          import re
-          p=Path('app.py')
-          s=p.read_text(encoding='utf-8')
-          old=r'''def retrieve(q,subject=None,limit=8):\n items=[]\n if db.enabled() and os.getenv('OPENAI_API_KEY'):\n  try:\n   from openai import OpenAI;v=OpenAI(api_key=os.environ['OPENAI_API_KEY']).embeddings.create(model='text-embedding-3-small',input=q).data[0].embedding;items=db.search_vector(v,subject,limit*4)\n  except Exception:items=[]\n if not items and db.enabled():\n  try:items=db.search_lexical(q,subject,limit*6)\n  except Exception:items=[]\n if not items and is_all_subjects(subject) and db.enabled():\n  try:items=db.search_lexical(q,None,limit*8)\n  except Exception:items=[]\n if not items:items=INDEX\n return _rank(q,_filter_items(items,subject),limit)'''
-          new=r'''def retrieve(q,subject=None,limit=8):\n # Knowledge retrieval is intentionally cross-subject. The selected subject is a preference/context,\n # not a hard boundary: a term may be taught directly in one subject and related to another.\n items=[]\n if db.enabled() and os.getenv('OPENAI_API_KEY'):\n  try:\n   from openai import OpenAI;v=OpenAI(api_key=os.environ['OPENAI_API_KEY']).embeddings.create(model='text-embedding-3-small',input=q).data[0].embedding;items=db.search_vector(v,None,limit*6)\n  except Exception:items=[]\n if not items and db.enabled():\n  try:items=db.search_lexical(q,None,limit*10)\n  except Exception:items=[]\n if not items:items=INDEX\n # Never discard evidence just because it belongs to another selected subject.\n return _rank(q,_filter_items(items,None),limit)'''
-          if old not in s:
-              raise SystemExit('retrieve block not found; aborting safely')
-          s=s.replace(old,new)
-          s=s.replace("return {'ref':f'src_{n}','document':doc,'locator':loc,'text':norm(item.get('text') or item.get('content') or item.get('passage')),'type':'spreadsheet' if str(doc).lower().endswith(('.xls','.xlsx')) else 'document'}", "return {'ref':f'src_{n}','document':doc,'subject':item.get('subject') or item.get('course') or 'Unassigned','locator':loc,'text':norm(item.get('text') or item.get('content') or item.get('passage')),'type':'spreadsheet' if str(doc).lower().endswith(('.xls','.xlsx')) else 'document'}")
-          old_prompt=r'''You are MBA Copilot. Answer ONLY from the supplied MBA course evidence. Question: {q}. Subject: {subject or 'All Subjects'}. Mode: {mode}. Relevance is the highest priority. For a definition question such as \"what is X\", use the clearest definitional/explanatory source first. Do NOT use a case table, financial statement, exhibit, bill of materials, or isolated number merely because it contains the words X. If the supplied passages do not directly establish the answer, say \"Not established in the supplied course material.\" Never invent course facts. Do not combine unrelated passages to manufacture an answer.'''
-          new_prompt=r'''You are MBA Copilot with a CROSS-SUBJECT MBA KNOWLEDGE BASE. Search and use relevant evidence from ANY subject taught in the supplied MBA material; the selected subject is NOT a restriction. A concept can be directly defined in one subject and connected to another subject through a case, framework, example, application, calculation, or related terminology.
-Question: {q}. Selected subject/context: {subject or 'All Subjects'}. Mode: {mode}.
-Relevance is the highest priority. For \"what is X\", first use a direct definition if the material contains one. If X is not explicitly defined but the supplied material contains clearly related concepts, explain X using those related course concepts and explicitly label the relationship (for example, \"The exact term is not explicitly defined, but the course connects it to...\"). Do NOT pretend a related passage directly defines X. If there is neither direct nor meaningful related evidence anywhere in the supplied MBA material, say \"Not established in the supplied course material.\" Never invent course facts. Do not use a case table, financial statement, exhibit, bill of materials, or isolated number merely because it contains a matching word. Use evidence across subjects when it genuinely helps answer the question.'''
-          if old_prompt not in s:
-              raise SystemExit('answer prompt block not found; aborting safely')
-          s=s.replace(old_prompt,new_prompt)
-          s=s.replace("evidence='\\n'.join(f\"[SOURCE {i+1}] {r['document']} | {r['locator']} | {r['text']}\" for i,r in enumerate(refs))", "evidence='\\n'.join(f\"[SOURCE {i+1}] Subject: {r.get('subject','Unassigned')} | {r['document']} | {r['locator']} | {r['text']}\" for i,r in enumerate(refs))")
-          s=s.replace("I could not find sufficiently relevant evidence in the selected MBA material. No answer was generated from another subject. Try selecting the subject containing the topic or upload/index the relevant class material.", "I could not find sufficiently relevant evidence in the MBA knowledge base across the supplied subjects. Try another wording or upload/index the relevant class material.")
-          p.write_text(s,encoding='utf-8')
-          PY
+          python cross_subject_patch.py
           python -m py_compile app.py
       - name: Commit and push
         run: |
-          git config user.name 'mba-copilot-bot'
-          git config user.email 'actions@users.noreply.github.com'
+          git config user.name github-actions
+          git config user.email github-actions@github.com
           git add app.py
           git diff --cached --quiet && exit 0
           git commit -m 'Make MBA knowledge retrieval cross-subject'
