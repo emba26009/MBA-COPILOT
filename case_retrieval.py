@@ -32,6 +32,20 @@ def case_concept_score(q,it):
  for c in concepts:score+=sum(12 for t in CONCEPT_ALIASES[c] if t.casefold() in text)
  qtokens=set(re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]+",q.casefold()))-QUESTION_WORDS;ttokens=set(re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]+",text));score+=2*len(qtokens&ttokens)
  return score
+def _local_index():
+ try:
+  import app
+  return list(getattr(app,'INDEX',[]) or [])
+ except Exception:
+  return []
+def _merge(items,local):
+ seen=set();out=[]
+ for it in list(items or [])+list(local or []):
+  text=_text(it)
+  if not text:continue
+  key=(_doc(it),str(it.get('subject') or it.get('course') or ''),str(it.get('locator') or it.get('page') or it.get('slide') or ''),text[:160])
+  if key not in seen:seen.add(key);out.append(it)
+ return out
 def retrieve(q,subject=None,limit=8):
  case=detect_case(q);items=[]
  if db.enabled() and os.getenv('OPENAI_API_KEY'):
@@ -40,20 +54,19 @@ def retrieve(q,subject=None,limit=8):
    v=OpenAI(api_key=os.getenv('OPENAI_API_KEY')).embeddings.create(model='text-embedding-3-small',input=q).data[0].embedding;items=db.search_vector(v,None,limit*20)
   except Exception:items=[]
  if db.enabled():
-  try:items=(items or [])+db.search_lexical(q,None,limit*30)
+  try:items=db.search_lexical(q,None,limit*30)+list(items or [])
   except Exception:pass
- seen=set();candidates=[]
- for it in items:
-  key=(_doc(it),it.get('locator'),_text(it)[:80])
-  if key not in seen and _text(it):seen.add(key);candidates.append(it)
+ # PostgreSQL is the primary index, but the packaged/local index is an explicit fallback.
+ # This prevents a temporary DB/vector/embedding problem from becoming a false "no evidence" answer.
+ items=_merge(items,_local_index())
  if case:
   name,meta=case;aliases=[a.casefold() for a in meta['aliases']]
-  exact=[x for x in candidates if any(a in _doc(x).casefold() for a in aliases)]
-  # Never substitute an unrelated case. If the requested case is not indexed,
-  # return no evidence rather than silently returning another case.
-  if not exact:return []
-  candidates=exact
- ranked=sorted(candidates,key=lambda x:case_concept_score(q,x),reverse=True)
+  exact=[x for x in items if any(a in _doc(x).casefold() for a in aliases)]
+  if exact:items=exact
+  else:
+   # For a named case, do not answer from an unrelated case.
+   return []
+ ranked=sorted(items,key=lambda x:case_concept_score(q,x),reverse=True)
  return [x for x in ranked[:limit] if case_concept_score(q,x)>0]
 def heuristic_answer(q,refs,concept):
  case=detect_case(q);name=case[0] if case else '';title=name.title() if name else (concept or 'the requested topic')
