@@ -235,6 +235,7 @@ class Handler(BaseHTTPRequestHandler):
   if path=='/api/ask-gpt':
    text,err=ask_gpt(q,subject);self.send_json({'error':err},400) if err else self.send_json({'answer':text,'ai':True,'mode':'Ask GPT','grounded':False});return
   self.send_json({'error':'Not found'},404)
+from case_retrieval import detect_concept, retrieve
 if __name__=='__main__':
  try:db.ensure_schema()
  except Exception as e:print('Database initialization warning:',e)
