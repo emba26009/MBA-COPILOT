@@ -24,10 +24,24 @@ jobs:
           p.write_text(s, encoding='utf-8')
           print('Fixed regex occurrences:', count)
           PY
+      - name: Wire case-aware concept-aware retrieval
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('app.py')
+          s=p.read_text(encoding='utf-8')
+          marker="if __name__=='__main__':"
+          imp="from case_retrieval import detect_concept, retrieve"
+          if imp not in s:
+              if marker not in s: raise SystemExit('Startup marker not found in app.py')
+              s=s.replace(marker, imp+'\n'+marker, 1)
+              p.write_text(s, encoding='utf-8')
+          PY
+          python -m py_compile app.py case_retrieval.py
       - name: Commit and push
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add index.html
-          git diff --cached --quiet || git commit -m 'Fix Intelligence chat JavaScript'
+          git add index.html app.py case_retrieval.py
+          git diff --cached --quiet || git commit -m 'Enable case-aware concept-aware retrieval'
           git push
