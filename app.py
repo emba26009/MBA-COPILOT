@@ -45,19 +45,18 @@ def _rank(q,items,limit):
   if len(out)>=limit:break
  return out
 def retrieve(q,subject=None,limit=8):
+ # Cross-subject retrieval: the selected subject is context, never a hard boundary.
  items=[]
  if db.enabled() and os.getenv('OPENAI_API_KEY'):
   try:
-   from openai import OpenAI;v=OpenAI(api_key=os.environ['OPENAI_API_KEY']).embeddings.create(model='text-embedding-3-small',input=q).data[0].embedding;items=db.search_vector(v,subject,limit*4)
+   from openai import OpenAI;v=OpenAI(api_key=os.environ['OPENAI_API_KEY']).embeddings.create(model='text-embedding-3-small',input=q).data[0].embedding;items=db.search_vector(v,None,limit*6)
   except Exception:items=[]
  if not items and db.enabled():
-  try:items=db.search_lexical(q,subject,limit*6)
-  except Exception:items=[]
- if not items and is_all_subjects(subject) and db.enabled():
-  try:items=db.search_lexical(q,None,limit*8)
+  try:items=db.search_lexical(q,None,limit*10)
   except Exception:items=[]
  if not items:items=INDEX
- return _rank(q,_filter_items(items,subject),limit)
+ return _rank(q,_filter_items(items,None),limit)
+
 def subjects():
  vals=db.subjects() if db.enabled() else []
  if not vals:vals=list(dict.fromkeys((x.get('subject') or x.get('course')) for x in INDEX if x.get('subject') or x.get('course')))
@@ -67,7 +66,7 @@ def subjects():
  ordered.extend(x for x in vals if subject_key(x) not in {subject_key(y) for y in ordered});return ordered
 def ref(item,n):
  doc=item.get('document') or item.get('source') or item.get('filename') or 'Course material';loc=item.get('locator') or item.get('page') or item.get('slide') or item.get('sheet') or ''
- return {'ref':f'src_{n}','document':doc,'locator':loc,'text':norm(item.get('text') or item.get('content') or item.get('passage')),'type':'spreadsheet' if str(doc).lower().endswith(('.xls','.xlsx')) else 'document'}
+ return {'ref':f'src_{n}','document':doc,'subject':item.get('subject') or item.get('course') or 'Unassigned','locator':loc,'text':norm(item.get('text') or item.get('content') or item.get('passage')),'type':'spreadsheet' if str(doc).lower().endswith(('.xls','.xlsx')) else 'document'}
 def gpt_client():
  key=os.getenv('OPENAI_API_KEY')
  if not key:return None
@@ -132,11 +131,11 @@ def heuristic_answer(q,refs,concept):
  return f'''## 📖 Simple Meaning\n{core}\n\n## 📚 Course Evidence\n{evidence}\n\n## 🧠 Memorize on Priority\n**Must Know:** {core}\n**High Priority:** Understand the distinction from related cost/concept terms.\n**Understand:** Be able to apply it to a business case.\n\n## 🎯 Exam Priority\nFocus first on the definition, distinction, formula where applicable, and worked case examples in the cited material.\n\n## ❓ Likely Exam Questions\n1. Define {concept}.\n2. Differentiate {concept} from a related concept.\n3. Apply {concept} to a business case.\n4. Explain or calculate the relevant metric using supplied case data.\n\n## 🏢 Real Business Use\nGeneral business application; this section is not claimed as a direct quote from the course material.\n\n## ⚠️ Common Confusion\nDo not treat every number in a retrieved case as evidence about the concept. Use only the figures and statements directly connected to the question.\n\n## ⚡ 30-Second Revision\n{core}\n\n[[SOURCE 1]]'''
 def answer(q,subject=None,mode='Teach Me'):
  concept,_=detect_concept(q);items=retrieve(q,subject);refs=[ref(x,i) for i,x in enumerate(items)]
- if not refs:return {'answer':'I could not find sufficiently relevant evidence in the selected MBA material. No answer was generated from another subject. Try selecting the subject containing the topic or upload/index the relevant class material.','sources':[],'concept':concept,'grounded':False}
+ if not refs:return {'answer':'I could not find sufficiently relevant evidence in the MBA knowledge base across the supplied subjects. Try another wording or upload/index the relevant class material.','sources':[],'concept':concept,'grounded':False}
  key=os.getenv('OPENAI_API_KEY')
  if key:
   try:
-   from openai import OpenAI;evidence='\n'.join(f"[SOURCE {i+1}] {r['document']} | {r['locator']} | {r['text']}" for i,r in enumerate(refs));prompt=f'''You are MBA Copilot. Answer ONLY from the supplied MBA course evidence. Question: {q}. Subject: {subject or 'All Subjects'}. Mode: {mode}. Relevance is the highest priority. For a definition question such as "what is X", use the clearest definitional/explanatory source first. Do NOT use a case table, financial statement, exhibit, bill of materials, or isolated number merely because it contains the words X. If the supplied passages do not directly establish the answer, say "Not established in the supplied course material." Never invent course facts. Do not combine unrelated passages to manufacture an answer. Structure: 📖 Simple Meaning; 📚 Course Material; 💡 Relevant Example; 🧮 How It Works/Formula if relevant; 🧠 Memorize on Priority with Must Know/High Priority/Understand; 🎯 Exam Priority; ❓ 4-6 likely exam questions; 🏢 Real Business Use (label general application if not course-derived); ⚠️ Common Confusion; ⚡ 30-Second Revision. Insert [[SOURCE N]] only when that source directly supports the sentence. Evidence:\n{evidence}''';r=OpenAI(api_key=os.getenv('OPENAI_API_KEY')).responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-5.6-luna'),input=prompt);return {'answer':r.output_text,'sources':refs,'concept':concept,'grounded':True}
+   from openai import OpenAI;evidence='\n'.join(f"[SOURCE {i+1}] Subject: {r.get('subject','Unassigned')} | {r['document']} | {r['locator']} | {r['text']}" for i,r in enumerate(refs));prompt=f'''You are MBA Copilot. Answer ONLY from the supplied MBA course evidence across ALL supplied MBA subjects. The selected subject is context, not a retrieval restriction. Question: {q}. Subject: {subject or 'All Subjects'}. Mode: {mode}. Relevance is the highest priority. For a definition question such as "what is X", use the clearest definitional/explanatory source first. Do NOT use a case table, financial statement, exhibit, bill of materials, or isolated number merely because it contains the words X. If the exact term is not explicitly defined but the supplied material contains clearly related concepts, explain the term using those related course concepts and explicitly say that the exact term is not directly defined. Do not pretend related evidence is a direct definition. Use evidence from any subject when the relationship is meaningful. If there is neither direct nor meaningful related evidence anywhere in the supplied MBA material, say "Not established in the supplied course material." Never invent course facts. Do not combine unrelated passages to manufacture an answer. Structure: 📖 Simple Meaning; 📚 Course Material; 💡 Relevant Example; 🧮 How It Works/Formula if relevant; 🧠 Memorize on Priority with Must Know/High Priority/Understand; 🎯 Exam Priority; ❓ 4-6 likely exam questions; 🏢 Real Business Use (label general application if not course-derived); ⚠️ Common Confusion; ⚡ 30-Second Revision. Insert [[SOURCE N]] only when that source directly supports the sentence. Evidence:\n{evidence}''';r=OpenAI(api_key=os.getenv('OPENAI_API_KEY')).responses.create(model=os.getenv('MBA_COPILOT_MODEL','gpt-5.6-luna'),input=prompt);return {'answer':r.output_text,'sources':refs,'concept':concept,'grounded':True}
   except Exception:pass
  return {'answer':heuristic_answer(q,refs,concept),'sources':refs,'concept':concept,'grounded':True,'ai_synthesis':False}
 def admin_users():
