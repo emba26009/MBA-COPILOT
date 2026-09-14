@@ -36,7 +36,8 @@ def _local_index():
  try:
   import app
   return list(getattr(app,'INDEX',[]) or [])
- except Exception:return []
+ except Exception:
+  return []
 def _merge(items,local):
  seen=set();out=[]
  for it in list(items or [])+list(local or []):
@@ -45,48 +46,32 @@ def _merge(items,local):
   key=(_doc(it),str(it.get('subject') or it.get('course') or ''),str(it.get('locator') or it.get('page') or it.get('slide') or ''),text[:160])
   if key not in seen:seen.add(key);out.append(it)
  return out
-def _db_search(q,limit):
- items=[]
+def retrieve(q,subject=None,limit=8):
+ case=detect_case(q);items=[]
  if db.enabled() and os.getenv('OPENAI_API_KEY'):
   try:
    from openai import OpenAI
-   v=OpenAI(api_key=os.getenv('OPENAI_API_KEY')).embeddings.create(model='text-embedding-3-small',input=q).data[0].embedding
-   items=db.search_vector(v,None,limit*20)
-  except Exception:pass
+   v=OpenAI(api_key=os.getenv('OPENAI_API_KEY')).embeddings.create(model='text-embedding-3-small',input=q).data[0].embedding;items=db.search_vector(v,None,limit*20)
+  except Exception:items=[]
  if db.enabled():
   try:items=db.search_lexical(q,None,limit*30)+list(items or [])
   except Exception:pass
- return items
-def _lazy_seed(case):
- if not case or not db.enabled():return
- name,_=case
- # Uber is bundled in uber_seed.py so it can be restored even if the background
- # startup seed has not completed yet. Other cases are supplied through the uploader.
- if name=='uber':
-  try:
-   import uber_seed
-   uber_seed.seed_uber_case()
-  except Exception:pass
-def retrieve(q,subject=None,limit=8):
- case=detect_case(q)
- items=_db_search(q,limit)
+ # PostgreSQL is the primary index, but the packaged/local index is an explicit fallback.
+ # This prevents a temporary DB/vector/embedding problem from becoming a false "no evidence" answer.
  items=_merge(items,_local_index())
  if case:
   name,meta=case;aliases=[a.casefold() for a in meta['aliases']]
   exact=[x for x in items if any(a in _doc(x).casefold() for a in aliases)]
-  if not exact:
-   _lazy_seed(case)
-   items=_merge(_db_search(q,limit),_local_index())
-   exact=[x for x in items if any(a in _doc(x).casefold() for a in aliases)]
-  # Never substitute an unrelated case for a named case.
-  if not exact:return []
-  items=exact
-ranked=sorted(items,key=lambda x:case_concept_score(q,x),reverse=True)
-return [x for x in ranked[:limit] if case_concept_score(q,x)>0]
+  if exact:items=exact
+  else:
+   # For a named case, do not answer from an unrelated case.
+   return []
+ ranked=sorted(items,key=lambda x:case_concept_score(q,x),reverse=True)
+ return [x for x in ranked[:limit] if case_concept_score(q,x)>0]
 def heuristic_answer(q,refs,concept):
  case=detect_case(q);name=case[0] if case else '';title=name.title() if name else (concept or 'the requested topic')
  evidence='\n\n'.join(f"**{i+1}. {r.get('document','Course material')} — {r.get('locator','')}**\n{r.get('text','')[:1200]}" for i,r in enumerate(refs[:5])) or 'Not established in the supplied course material.'
  if case:
   return f'''## 📖 Case Overview\nThe question is about the **{title}** case. The answer below is grounded in the retrieved MBA course material.\n\n## 📚 Course Evidence\n{evidence}\n\n## 🧠 What to Remember\nFocus on the business problem, the approach used in the case, the relevant MBA concepts, and the evidence supporting the case conclusions.\n\n## 🎯 Exam Priority\nBe able to explain the case, connect it to the relevant course concept(s), and use the cited material to support your answer.\n\n## ⚠️ Grounding Note\nOnly the retrieved course evidence is treated as a course fact. General interpretation should be clearly separated from the source material.'''
- core={'fixed cost':'A fixed cost does not change with activity within the relevant range.','variable cost':'A variable cost changes with the level of activity.','contribution':'Contribution equals selling price minus variable cost per unit.','break-even':'Break-even is the activity level where contribution covers fixed costs and profit is zero.'}.get(concept,'The supplied material contains relevant evidence for this question.')
+ core={'fixed cost':'A fixed cost does not change with activity within the relevant range.','variable cost':'A variable cost changes with the level of activity.','contribution':'Contribution equals selling price minus variable cost per unit.','break-even':'Break-even is the activity level where contribution covers fixed costs and profit is zero.'}.get(concept,'The supplied material contains evidence related to the requested topic.')
  return f'''## 📖 Simple Meaning\n{core}\n\n## 📚 Course Evidence\n{evidence}\n\n## 🧠 Memorize on Priority\n**Must Know:** {core}\n**High Priority:** Connect the concept to the cited MBA case or class material.\n**Understand:** Be able to apply it to a business case.\n\n## 🎯 Exam Priority\nFocus first on the definition, distinction, formula where applicable, and worked case examples in the cited material.\n\n## ⚡ 30-Second Revision\n{core}'''
