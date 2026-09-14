@@ -1,0 +1,105 @@
+name: Fix ZIP Upload Memory Usage
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch streaming multipart upload and low-memory ingestion
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          p=Path('app.py')
+          s=p.read_text(encoding='utf-8')
+          if 'import cgi' not in s:
+              s=s.replace('import os,re,json,tempfile,email,secrets,http.cookies,time,base64', 'import os,re,json,tempfile,email,secrets,http.cookies,time,base64,cgi')
+
+          marker='def upload_stream(handler,admin):'
+          if marker not in s:
+              fn='''def upload_stream(handler,admin):
+   if not admin:return {'error':'Admin authentication required.'},401
+   try:
+    fs=cgi.FieldStorage(fp=handler.rfile,headers=handler.headers,environ={'REQUEST_METHOD':'POST','CONTENT_TYPE':handler.headers.get('Content-Type',''),'CONTENT_LENGTH':handler.headers.get('Content-Length','')})
+   except Exception as e:return {'error':f'Upload parsing failed: {e}'},400
+   subject=fs.getfirst('subject','Unassigned');parts=fs.list or [];results=[];count=0
+   from ingest import ingest_path
+   for part in parts:
+    fn=part.filename
+    if not fn:continue
+    count+=1
+    if count>20:return {'error':'Too many files in one request. Upload up to 20 files at a time.'},400
+    src=getattr(part,'file',None)
+    if src is None:continue
+    suffix=Path(fn).suffix
+    with tempfile.NamedTemporaryFile(suffix=suffix,delete=False) as f:
+     while True:
+      chunk=f.write(src.read(1024*1024))
+      if not chunk:break
+     tmp=f.name
+    try:results.extend(ingest_path(tmp,subject))
+    except Exception as e:results.append({'filename':fn,'error':str(e)})
+    finally:os.unlink(tmp)
+   if not results:return {'error':'No file supplied.'},400
+   return {'ok':True,'subject':subject,'uploaded_by':admin['email'],'results':results},200
+
+'''
+              s=s.replace('class Handler(BaseHTTPRequestHandler):',fn+'class Handler(BaseHTTPRequestHandler):')
+
+          old="path=urlparse(self.path).path;n=int(self.headers.get('Content-Length',0));raw=self.rfile.read(n)"
+          new="path=urlparse(self.path).path\n  if path=='/api/upload' and self.headers.get('Content-Type','').lower().startswith('multipart/form-data'):\n   out,status=upload_stream(self,admin_session(self.headers));self.send_json(out,status);return\n  n=int(self.headers.get('Content-Length',0));raw=self.rfile.read(n)"
+          if old in s:
+              s=s.replace(old,new,1)
+          else:
+              raise SystemExit('do_POST target not found')
+          p.write_text(s,encoding='utf-8')
+
+          p=Path('ingest.py')
+          s=p.read_text(encoding='utf-8')
+          s=s.replace("if os.getenv('OPENAI_API_KEY'):", "if os.getenv('OPENAI_API_KEY') and os.getenv('MBA_COPILOT_EMBED_ON_INGEST','false').lower()=='true':",1)
+          start=s.index('def ingest_path(path,subject):')
+          new='''def _extract_zip_recursive(path,subject,depth=0):
+    results=[]
+    if depth>3:return [{'filename':Path(path).name,'error':'Nested ZIP depth limit exceeded.'}]
+    with tempfile.TemporaryDirectory() as td:
+        root=Path(td)
+        import zipfile
+        with zipfile.ZipFile(path) as z:
+            members=z.infolist()
+            total=sum(max(0,m.file_size) for m in members if not m.is_dir())
+            if len(members)>1000 or total>350*1024*1024:raise ValueError('ZIP is too large after extraction; maximum supported is 350 MB uncompressed and 1000 entries.')
+            for m in members:
+                target=(root/m.filename).resolve()
+                if not str(target).startswith(str(root.resolve())+os.sep):raise ValueError('Unsafe ZIP path rejected.')
+            z.extractall(root)
+        for p in root.rglob('*'):
+            if not p.is_file():continue
+            ext=p.suffix.lower()
+            if ext in SUPPORTED:results.append(embed_and_store(p.name,subject,p))
+            elif ext=='.zip':results.extend(_extract_zip_recursive(p,subject,depth+1))
+    return results
+
+def ingest_path(path,subject):
+    path=Path(path)
+    if path.suffix.lower()=='.zip':return _extract_zip_recursive(path,subject)
+    if path.suffix.lower() in SUPPORTED:return [embed_and_store(path.name,subject,path)]
+    return []
+'''
+          s=s[:start]+new
+          p.write_text(s,encoding='utf-8')
+          PY
+          python -m py_compile app.py ingest.py
+      - name: Commit
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add app.py ingest.py
+          git diff --cached --quiet && exit 0
+          git commit -m "Prevent Render memory exhaustion during ZIP ingestion"
+          git push
