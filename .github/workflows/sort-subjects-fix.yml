@@ -1,0 +1,33 @@
+name: Apply trimester subject sorting
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  sort:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Replace subject function safely
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('index.html')
+          s=p.read_text(encoding='utf-8')
+          start=s.find('function fillSubjects(a){')
+          end=s.find('async function meta()', start)
+          if start < 0 or end < 0:
+              raise SystemExit('Could not locate subject function boundaries')
+          new_func="""function fillSubjects(a){a=[...new Set((a||[]).filter(Boolean))];if(!a.length)a=FALLBACK;const t1=['Behaviour in Organizations','Financial Reporting and Management Accounting','Business Statistics for Managers','Digital Transformation','Operations Management'];const t2=['Action Lab: Systems Thinking for Problem Solving','Artificial Intelligence for Business','Managerial Economics and Macroeconomic Environment','Marketing Management–I: Marketing Management Using AI','Supply Chain Management'];a=a.map(x=>String(x).trim());const one=t1.filter(x=>a.includes(x)),two=t2.filter(x=>a.includes(x));const rest=a.filter(x=>!t1.includes(x)&&!t2.includes(x));let o='<optgroup label=\"TRIMESTER 1\">'+one.map(x=>`<option value=\"${esc(x)}\">${esc(x)}</option>`).join('')+'</optgroup><optgroup label=\"TRIMESTER 2\">'+two.map(x=>`<option value=\"${esc(x)}\">${esc(x)}</option>`).join('');if(rest.length)o+='<optgroup label=\"OTHER / UNASSIGNED\">'+rest.map(x=>`<option value=\"${esc(x)}\">${esc(x)}</option>`).join('')+'</optgroup>';o+='</optgroup>';$('subject').innerHTML=o;$('uploadSubject').innerHTML=o}"
+          p.write_text(s[:start]+new_func+s[end:],encoding='utf-8')
+          PY
+      - name: Commit and push
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add index.html
+          git diff --cached --quiet && exit 0
+          git commit -m 'Fix trimester subject grouping'
+          git push
