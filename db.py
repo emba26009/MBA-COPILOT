@@ -48,6 +48,7 @@ def _lexical_once(q,subject,limit,exact_phrases=None):
     sql=f"SELECT p.id,d.filename AS document,d.subject,p.locator,p.text FROM passages p JOIN documents d ON d.id=p.document_id WHERE ({' OR '.join(clauses)}){filt} ORDER BY {order} LIMIT %s"
     with conn() as c:
         with c.cursor(cursor_factory=RealDictCursor) as cur:cur.execute(sql,params);return [dict(r) for r in cur.fetchall()]
+
 def search_lexical(q,subject=None,limit=14):
     if not enabled():return []
     l=q.casefold();exact=[]
@@ -56,8 +57,15 @@ def search_lexical(q,subject=None,limit=14):
     elif 'contribution' in l:exact=['contribution margin','contribution','selling price','variable cost']
     elif 'break-even' in l or 'break even' in l:exact=['break-even','break even','contribution','fixed cost']
     elif 'vrio' in l:exact=['VRIO','valuable','rare','inimitable']
+    elif 'social psychology' in l:exact=['social psychology','social behavior','social behaviour','group behavior','group behaviour','social influence','interpersonal','group dynamics','perception','attitudes']
+    elif 'group behavior' in l or 'group behaviour' in l:exact=['group behavior','group behaviour','group dynamics','roles','norms','cohesiveness','social loafing']
+    elif 'personality' in l:exact=['personality','individual differences','traits','situation','behavior']
+    elif 'perception' in l:exact=['perception','selective perception','halo effect','stereotyping','projection','attribution']
+    elif 'attitude' in l or 'attitudes' in l:exact=['attitude','attitudes','job satisfaction','organizational commitment','perceived organizational support']
     if exact:
         rows=_lexical_once(' '.join(exact[:2]),subject,limit,exact_phrases=exact)
+        if rows:return rows
+        rows=_lexical_once(q,subject,limit,exact_phrases=exact)
         if rows:return rows
     return _lexical_once(q,subject,limit,exact_phrases=exact)
 def add_document(filename,subject,file_type,passages):
