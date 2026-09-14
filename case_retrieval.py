@@ -27,7 +27,7 @@ def case_concept_score(q,it):
   score+=sum(25 for t in meta['terms'] if t.casefold() in text)
   score+=sum(15 for a in meta['aliases'] if a.casefold() in text)
   doc=(it.get('document') or it.get('filename') or '').casefold()
-  if any(a.casefold() in doc for a in meta['aliases'):score+=120
+  if any(a.casefold() in doc for a in meta['aliases']):score+=120
  for c in concepts:score+=sum(12 for t in CONCEPT_ALIASES[c] if t.casefold() in text)
  qtokens=set(re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]+",q.casefold()))-QUESTION_WORDS;ttokens=set(re.findall(r"[a-zA-Z0-9][a-zA-Z0-9'-]+",text));score+=2*len(qtokens&ttokens)
  return score
@@ -48,10 +48,8 @@ def retrieve(q,subject=None,limit=8):
  ranked=sorted(candidates,key=lambda x:case_concept_score(q,x),reverse=True)
  return [x for x in ranked[:limit] if case_concept_score(q,x)>0]
 def heuristic_answer(q,refs,concept):
- case=detect_case(q);name=case[0] if case else ''
- title=name.title() if name else (concept or 'the requested topic')
+ case=detect_case(q);name=case[0] if case else '';title=name.title() if name else (concept or 'the requested topic')
  evidence='\n\n'.join(f"**{i+1}. {r.get('document','Course material')} — {r.get('locator','')}**\n{r.get('text','')[:900]}" for i,r in enumerate(refs[:5])) or 'Not established in the supplied course material.'
- if case:
-  return f'''## 📖 Case Overview\nThe question is about the **{title}** case. The answer below is grounded in the retrieved MBA course material.\n\n## 📚 Course Evidence\n{evidence}\n\n## 🧠 What to Remember\nFocus on the business problem, the approach used in the case, the relevant MBA concepts, and the evidence supporting the case conclusions.\n\n## 🎯 Exam Priority\nBe able to explain the case, connect it to the relevant course concept(s), and use the cited material to support your answer.\n\n## ⚠️ Grounding Note\nOnly the retrieved course evidence is treated as a course fact. General interpretation should be clearly separated from the source material.\n\n[[SOURCE 1]]'''
+ if case:return f'''## 📖 Case Overview\nThe question is about the **{title}** case. The answer below is grounded in the retrieved MBA course material.\n\n## 📚 Course Evidence\n{evidence}\n\n## 🧠 What to Remember\nFocus on the business problem, the approach used in the case, the relevant MBA concepts, and the evidence supporting the case conclusions.\n\n## 🎯 Exam Priority\nBe able to explain the case, connect it to the relevant course concept(s), and use the cited material to support your answer.\n\n## ⚠️ Grounding Note\nOnly the retrieved course evidence is treated as a course fact. General interpretation should be clearly separated from the source material.\n\n[[SOURCE 1]]'''
  core={'fixed cost':'A fixed cost does not change with activity within the relevant range.','variable cost':'A variable cost changes with the level of activity.','contribution':'Contribution equals selling price minus variable cost per unit.','break-even':'Break-even is the activity level where contribution covers fixed costs and profit is zero.'}.get(concept,'The supplied material contains relevant evidence for this question.')
  return f'''## 📖 Simple Meaning\n{core}\n\n## 📚 Course Evidence\n{evidence}\n\n## 🧠 Memorize on Priority\n**Must Know:** {core}\n**High Priority:** Connect the concept to the cited MBA case or class material.\n**Understand:** Be able to apply it to a business case.\n\n## ⚡ 30-Second Revision\n{core}\n\n[[SOURCE 1]]'''
