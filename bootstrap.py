@@ -2,9 +2,10 @@ import app
 import case_retrieval
 from admin_api import install
 
-# Override the legacy generic-word retrieval with case-aware + concept-aware retrieval.
+# Replace the legacy generic-word retrieval with case-aware + concept-aware retrieval.
 app.detect_concept = case_retrieval.detect_concept
 app.retrieve = case_retrieval.retrieve
+app.heuristic_answer = case_retrieval.heuristic_answer
 
 install(app.Handler)
 if __name__=='__main__':
