@@ -35,7 +35,9 @@ def _patched_get(self):
         return
     if path in ('/','/index.html'):
         data = (app.BASE/'index.html').read_bytes()
-        patch = b'''<style>.source-btn{border:0;background:#2563eb;color:#fff;border-radius:8px;padding:7px 10px;cursor:pointer;font-weight:700;white-space:nowrap}</style><script>(function(){const f=window.fetch;let refs=[];function p(){const box=document.getElementById('sources');if(!box)return;[...box.children].forEach((el,i)=>{if(el.querySelector('.source-btn')||!refs[i])return;const b=document.createElement('button');b.className='source-btn';b.textContent='📄 Open Source';b.onclick=()=>window.open('/source/'+encodeURIComponent(refs[i].ref),'_blank');el.appendChild(b)})}window.fetch=function(...a){return f(...a).then(r=>{if(String(a[0]).includes('/api/chat'))r.clone().json().then(d=>{refs=d.sources||[];setTimeout(p,0)}).catch(()=>{});return r})};new MutationObserver(p).observe(document.documentElement,{subtree:true,childList:true})})();</script>'''
+        # Unicode string first; encode explicitly as UTF-8 so the PDF icon is valid.
+        patch = '''<style>.source-btn{border:0;background:#2563eb;color:#fff;border-radius:8px;padding:7px 10px;cursor:pointer;font-weight:700;white-space:nowrap}</style><script>(function(){const f=window.fetch;let refs=[];function p(){const box=document.getElementById('sources');if(!box)return;[...box.children].forEach((el,i)=>{if(el.querySelector('.source-btn')||!refs[i])return;const b=document.createElement('button');b.className='source-btn';b.textContent='📄 Open Source';b.onclick=()=>window.open('/source/'+encodeURIComponent(refs[i].ref),'_blank');el.appendChild(b)})}window.fetch=function(...a){return f(...a).then(r=>{if(String(a[0]).includes('/api/chat'))r.clone().json().then(d=>{refs=d.sources||[];setTimeout(p,0)}).catch(()=>{});return r})};new MutationObserver(p).observe(document.documentElement,{subtree:true,childList:true})})();</script>'''
+        patch = patch.encode('utf-8')
         data = data.replace(b'</body>', patch+b'</body>')
         self.send_response(200)
         self.send_header('Content-Type','text/html; charset=utf-8')
