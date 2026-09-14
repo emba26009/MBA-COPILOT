@@ -1,0 +1,37 @@
+name: Deploy Case-Aware Retrieval
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'case_retrieval.py'
+      - '.github/workflows/case-aware-retrieval.yml'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wire retrieval module into app
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('app.py')
+          s=p.read_text(encoding='utf-8')
+          marker="if __name__=='__main__':"
+          imp="from case_retrieval import detect_concept, retrieve"
+          if imp not in s:
+              if marker not in s:
+                  raise SystemExit('Could not find app startup marker')
+              s=s.replace(marker, imp+'\n'+marker, 1)
+              p.write_text(s,encoding='utf-8')
+          PY
+      - name: Validate Python syntax
+        run: python -m py_compile app.py case_retrieval.py
+      - name: Commit and push
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py case_retrieval.py .github/workflows/case-aware-retrieval.yml
+          git diff --cached --quiet || git commit -m 'Enable case-aware concept-aware retrieval'
+          git push
