@@ -1,5 +1,11 @@
 import app
+import case_retrieval
 from admin_api import install
+
+# Override the legacy generic-word retrieval with case-aware + concept-aware retrieval.
+app.detect_concept = case_retrieval.detect_concept
+app.retrieve = case_retrieval.retrieve
+
 install(app.Handler)
 if __name__=='__main__':
     try: app.db.ensure_schema()
