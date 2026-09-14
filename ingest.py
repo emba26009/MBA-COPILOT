@@ -7,6 +7,8 @@ from pptx import Presentation
 import pandas as pd
 
 SUPPORTED={'.pdf','.docx','.pptx','.xlsx','.xls'}
+MAX_ZIP_DEPTH=3
+
 def clean(s): return ' '.join(str(s or '').split()).strip()
 def chunk(text,size=1800,overlap=250):
     text=clean(text)
@@ -48,8 +50,6 @@ def embed_and_store(filename,subject,path):
     if not passages:return {'filename':filename,'passages':0,'embeddings':0}
     did=db.add_document(filename,subject,path.suffix.lower(),passages)
     embedded=0
-    # Embeddings improve semantic search, but are optional. If API credits are
-    # exhausted the passages remain searchable through the lexical engine.
     if os.getenv('OPENAI_API_KEY'):
         try:
             from openai import OpenAI
@@ -61,12 +61,41 @@ def embed_and_store(filename,subject,path):
         except Exception as e: print('Embedding warning:',e)
     return {'filename':filename,'passages':len(passages),'embeddings':embedded}
 
+def _safe_extract(z,root):
+    root=Path(root).resolve()
+    for member in z.infolist():
+        target=(root/member.filename).resolve()
+        if target==root or root in target.parents:
+            z.extract(member,root)
+
+def _ingest_tree(root,subject,results,depth=0):
+    for p in Path(root).rglob('*'):
+        if not p.is_file():continue
+        ext=p.suffix.lower()
+        if ext in SUPPORTED:
+            try:results.append(embed_and_store(p.name,subject,p))
+            except Exception as e:results.append({'filename':p.name,'error':str(e),'passages':0,'embeddings':0})
+        elif ext=='.zip' and depth<MAX_ZIP_DEPTH:
+            try:
+                with zipfile.ZipFile(p) as z:
+                    child=p.parent/(p.stem+'_expanded')
+                    child.mkdir(exist_ok=True)
+                    _safe_extract(z,child)
+                _ingest_tree(child,subject,results,depth+1)
+            except Exception as e:results.append({'filename':p.name,'error':f'ZIP extraction failed: {e}','passages':0,'embeddings':0})
+
 def ingest_path(path,subject):
     path=Path(path);results=[]
     if path.suffix.lower()=='.zip':
         with tempfile.TemporaryDirectory() as td:
-            with zipfile.ZipFile(path) as z:z.extractall(td)
-            for p in Path(td).rglob('*'):
-                if p.is_file() and p.suffix.lower() in SUPPORTED:results.append(embed_and_store(p.name,subject,p))
-    elif path.suffix.lower() in SUPPORTED:results.append(embed_and_store(path.name,subject,path))
+            try:
+                with zipfile.ZipFile(path) as z:_safe_extract(z,td)
+            except zipfile.BadZipFile:
+                return [{'filename':path.name,'error':'The uploaded ZIP is invalid or incomplete. Please re-create the ZIP and upload it again.','passages':0,'embeddings':0}]
+            except Exception as e:
+                return [{'filename':path.name,'error':f'ZIP extraction failed: {e}','passages':0,'embeddings':0}]
+            _ingest_tree(td,subject,results)
+    elif path.suffix.lower() in SUPPORTED:
+        try:results.append(embed_and_store(path.name,subject,path))
+        except Exception as e:results.append({'filename':path.name,'error':str(e),'passages':0,'embeddings':0})
     return results
